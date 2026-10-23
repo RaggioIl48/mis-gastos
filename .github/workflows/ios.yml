@@ -1,0 +1,88 @@
+name: iOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-ipa:
+    name: Compilar, probar y generar .ipa
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Versión de Xcode
+        run: xcodebuild -version
+
+      - name: Elegir simulador de iPhone
+        id: simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] | last | .udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "No hay simuladores de iPhone disponibles" >&2
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Simulador: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar y ejecutar pruebas
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project MisGastos.xcodeproj \
+            -scheme MisGastos \
+            -destination "id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath build/test \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee xcodebuild-test.log
+
+      - name: Compilar para iPhone (sin firmar)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project MisGastos.xcodeproj \
+            -scheme MisGastos \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee xcodebuild-device.log
+
+      - name: Empaquetar .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/device/Build/Products/Release-iphoneos/MisGastos.app Payload/
+          zip -qry MisGastos-sin-firmar.ipa Payload
+
+      - name: Subir .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: MisGastos-sin-firmar
+          path: MisGastos-sin-firmar.ipa
+          retention-days: 30
+
+      - name: Subir registros y resultados de pruebas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registros
+          path: |
+            xcodebuild-test.log
+            xcodebuild-device.log
+            TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
