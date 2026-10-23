@@ -662,6 +662,10 @@ body.no-tabs .tabbar { display: none; }
 
 .avatar-name { font-size: 16px; }
 
+.avatar.small { display: inline-grid; width: 26px; height: 26px; margin-right: 10px; font-size: 12px; vertical-align: middle; }
+
+.member-total > span { display: inline-flex; align-items: center; color: var(--text); }
+
 .primary-button svg { width: 20px; height: 20px; }
 
 .row-button.static { cursor: default; }

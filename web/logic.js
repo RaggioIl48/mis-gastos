@@ -279,8 +279,14 @@ export function sameSummary(a, b) {
  * Totales del hogar para un mes a partir de los resúmenes de cada persona.
  * Las categorías se juntan sin importar mayúsculas ni tildes.
  */
-export function householdMonth(summaries, monthKey) {
+export function householdMonth(summaries, monthKey, members = []) {
   const ofMonth = summaries.filter((summary) => summary.month === monthKey);
+  const memberTotals = new Map(members.map((member) => [member.uid, { ...member, total: 0 }]));
+  for (const summary of ofMonth) {
+    const entry = memberTotals.get(summary.uid) ?? { uid: summary.uid, name: summary.name ?? 'Miembro', total: 0 };
+    entry.total += summary.total ?? 0;
+    memberTotals.set(summary.uid, entry);
+  }
   const categories = new Map();
   for (const summary of ofMonth) {
     for (const [name, amount] of Object.entries(summary.byCategory ?? {})) {
@@ -294,6 +300,7 @@ export function householdMonth(summaries, monthKey) {
   return {
     total,
     count: ofMonth.reduce((sum, summary) => sum + (summary.count ?? 0), 0),
+    byMember: [...memberTotals.values()],
     byCategory: [...categories.values()]
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, LOCALE))
       .map((entry) => ({ ...entry, share: total ? entry.total / total : 0 })),

@@ -292,9 +292,14 @@ function listView() {
 function familyView() {
   const household = state.household;
   if (!household) return `<header class="title-bar"><h1>Familia</h1></header>${loadingView()}`;
-  const month = householdMonth(state.summaries, state.familyMonth);
-  const myIcons = new Map(state.data.categories.map((c) => [comparisonKey(c.name), c.icon]));
   const members = household.members.map((id) => ({ id, name: household.names?.[id] ?? 'Miembro' }));
+  const month = householdMonth(state.summaries, state.familyMonth, members.map(({ id, name }) => ({ uid: id, name })));
+  const myIcons = new Map(state.data.categories.map((c) => [comparisonKey(c.name), c.icon]));
+  const memberRows = month.byMember.map((member) => `
+    <div class="summary-row member-total">
+      <span><span class="avatar small" aria-hidden="true">${escapeHTML(initials(member.name))}</span>${escapeHTML(member.uid === uid() ? `${member.name} (tú)` : member.name)}</span>
+      <strong>${formatCOP(member.total)}</strong>
+    </div>`).join('');
 
   const rows = month.byCategory.map((entry) => `
     <li class="share-row">
@@ -311,6 +316,7 @@ function familyView() {
       ${monthNav(state.familyMonth, 'family')}
       <p class="summary-label">Total del hogar</p>
       <p class="summary-total">${formatCOP(month.total)}</p>
+      ${memberRows}
       <div class="summary-row"><span>Movimientos</span><strong>${month.count}</strong></div>
     </section>
     <h2 class="section-title">Por categoría</h2>
@@ -320,7 +326,7 @@ function familyView() {
       <div class="avatars">${members.map((m) => `<span class="avatar" title="${escapeHTML(m.name)}">${escapeHTML(initials(m.name))}</span><span class="avatar-name">${escapeHTML(m.id === uid() ? `${m.name} (tú)` : m.name)}</span>`).join('')}</div>
       <button class="primary-button" type="button" data-action="invite">${ICONS.share}<span>Invitar a alguien</span></button>
     </div>
-    <p class="section-note">Aquí solo se ven los totales del hogar. El detalle de cada gasto lo ve únicamente quien lo registró.</p>`;
+    <p class="section-note">Aquí se ven los totales del hogar y de cada persona. El detalle de cada gasto lo ve únicamente quien lo registró.</p>`;
 }
 
 function categoriesView() {

@@ -47,8 +47,17 @@ describe('totales del hogar', () => {
     assert.equal(month.byCategory[0].share, 0.5);
   });
 
+  test('total de cada persona, en el orden del hogar y con el nombre actual', () => {
+    const members = [{ uid: 'bea', name: 'Bea' }, { uid: 'ana', name: 'Ana María' }, { uid: 'cata', name: 'Cata' }];
+    assert.deepEqual(householdMonth(summaries, '2026-10', members).byMember, [
+      { uid: 'bea', name: 'Bea', total: 50_000 },
+      { uid: 'ana', name: 'Ana María', total: 110_000 },
+      { uid: 'cata', name: 'Cata', total: 0 },
+    ]);
+  });
+
   test('un mes sin datos da cero', () => {
-    assert.deepEqual(householdMonth(summaries, '2026-01'), { total: 0, count: 0, byCategory: [] });
+    assert.deepEqual(householdMonth(summaries, '2026-01'), { total: 0, count: 0, byMember: [], byCategory: [] });
   });
 
   test('iniciales', () => {

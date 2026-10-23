@@ -1,6 +1,6 @@
 // Permite abrir la app sin conexión. Sirve lo guardado al instante y se
 // actualiza en segundo plano cuando hay Internet. Los datos van aparte (Firestore).
-const CACHE = 'mis-gastos-v2';
+const CACHE = 'mis-gastos-v3';
 const SDK = 'https://www.gstatic.com/firebasejs/12.19.0/';
 const ASSETS = [
   './',
