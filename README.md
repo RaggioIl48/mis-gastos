@@ -1,34 +1,62 @@
 # Mis Gastos
 
-App para registrar gastos personales en pesos colombianos. Todo se guarda en el teléfono: sin cuentas ni servidores.
+App para registrar gastos personales en pesos colombianos y compartir con el hogar los totales y la lista de compras.
 
-Hay dos versiones con las mismas funciones:
+Hay dos versiones:
 
-- **Versión web** (carpeta [`web/`](web/)): se abre en Safari y se instala con *Añadir a pantalla de inicio*. Es la forma recomendada si no tienes Mac.
-- **App nativa para iPhone** (Swift + SwiftUI + SwiftData): necesita Xcode o Sideloadly para instalarse.
+- **Versión web** (carpeta [`web/`](web/)): la que se usa. Se abre en Safari y se instala con *Añadir a pantalla de inicio*.
+- **App nativa para iPhone** (Swift + SwiftUI + SwiftData): solo gastos personales, sin hogar ni lista; necesita Xcode o Sideloadly.
 
 ## Versión web
 
-HTML, CSS y JavaScript sin dependencias ni paso de compilación.
+HTML, CSS y JavaScript sin paso de compilación, con Firebase (Google) para el inicio de sesión y los datos en la nube.
 
-- Instalar en el iPhone: abre la dirección publicada en **Safari** → **Compartir** → **Añadir a pantalla de inicio**. Ábrela siempre desde ese icono: funciona sin Internet y el iPhone conserva sus datos.
-- Los datos viven en el almacenamiento de Safari para ese sitio. En **Ajustes → Exportar copia** guardas un archivo de respaldo que luego puedes **Importar**.
-- Probar en el PC (requiere Node.js):
+**Funciones:** gastos en miles de COP con vista previa, inicio mensual, historial con filtros, categorías, aviso de duplicados, CSV y copia de seguridad; pestaña **Lista** (compras del hogar, con aviso en Inicio y número en el icono) y pestaña **Familia** (total del hogar por mes y por categoría).
+
+**Privacidad** (`firestore.rules`, probado en `rules-tests/`):
+
+| Dato | Quién lo ve |
+| --- | --- |
+| Gastos, notas y categorías de cada persona | Solo esa persona |
+| Totales por mes y categoría de cada persona | Los miembros del hogar (la app muestra la suma) |
+| Lista de compras | Los miembros del hogar |
+
+Para unir a alguien: **Familia → Invitar a alguien** envía un enlace; quien lo abre e inicia sesión entra al hogar.
+
+### Desarrollo (requiere Node.js y Java)
 
 ```bash
-cd web
-npm start
+npm install
+npm test
 ```
 
-y abre http://localhost:5173. Pruebas de la lógica: `npm test`. Para regenerar los iconos: `npm run icons`.
+`npm test` ejecuta las pruebas de la lógica y las de las reglas de privacidad en el emulador de Firestore. Para probar la app con datos de prueba:
+
+```bash
+npm run emuladores
+```
+
+y, en otra terminal, `node web/tools/serve.js`. En http://localhost:5173/?usuaria=Ana se entra como una persona de prueba (solo en `localhost`, que siempre usa los emuladores y nunca los datos reales).
+
+> En Windows, si el emulador falla con *Unable to establish loopback connection*, define antes `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=<una carpeta temporal>`.
+
+### Publicar
+
+Los datos del proyecto de Firebase van en `web/firebase-config.js`. Luego:
+
+```bash
+npm run deploy
+```
+
+publica la app en Firebase Hosting y las reglas de Firestore.
 
 | Archivo | Contenido |
 | --- | --- |
-| `web/logic.js` | Lógica pura: miles → pesos, formato `$25.000`, totales, filtros, duplicados, categorías, CSV y copias |
-| `web/store.js` | Guardado local (localStorage) |
-| `web/app.js` | Interfaz: Inicio, Historial, Categorías, Ajustes y formularios |
-| `web/sw.js` | Funcionamiento sin conexión |
-| `web/tests/` | Pruebas con `node --test` |
+| `web/logic.js` | Lógica pura: miles → pesos, totales, filtros, duplicados, resúmenes del hogar, lista, CSV y copias |
+| `web/cloud.js` | Firebase: sesión con Google, lectura y escritura en Firestore |
+| `web/app.js` | Interfaz: Inicio, Historial, Lista, Familia, Ajustes y formularios |
+| `web/sw.js` | Apertura sin conexión |
+| `firestore.rules` | Reglas de privacidad |
 
 ## App nativa: requisitos
 

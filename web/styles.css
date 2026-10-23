@@ -518,6 +518,178 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 
 .toast.visible { opacity: 1; transform: translate(-50%, 0); }
 
+/* ---------- Inicio de sesión y carga ---------- */
+
+body.no-tabs .tabbar { display: none; }
+
+.center-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: calc(100vh - var(--safe-top) - 120px);
+  padding: 24px 8px;
+  text-align: center;
+  color: var(--secondary);
+}
+
+.center-screen h1 { margin: 4px 0 0; font-size: 34px; color: var(--text); }
+
+.center-screen p { margin: 0; max-width: 340px; font-size: 16px; }
+
+.auth-icon { border-radius: 20px; }
+
+.auth-note { padding: 10px 14px; border-radius: var(--radius); background: var(--accent-soft); color: var(--text); }
+
+.primary-button.google { max-width: 340px; margin-top: 12px; }
+
+.primary-button.google svg { width: 20px; height: 20px; }
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--fill);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.back-button { display: inline-flex; align-items: center; gap: 2px; margin: 4px 0 -8px -6px; padding: 8px 4px; color: var(--accent); font-size: 17px; }
+
+.back-button svg { width: 22px; height: 22px; stroke-width: 2.2; }
+
+.summary-row.first { border-top: 0; }
+
+/* ---------- Aviso de compras en Inicio ---------- */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  text-align: left;
+}
+
+.banner.subtle { margin-top: 20px; background: var(--card); }
+
+.banner-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 18px;
+}
+
+.banner.subtle .banner-icon { background: var(--accent-soft); }
+
+.banner-icon svg { width: 20px; height: 20px; }
+
+.banner .row-title { font-weight: 600; }
+
+/* ---------- Lista de compras ---------- */
+
+.add-item { display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 16px; }
+
+.add-item input { flex: 1; min-width: 0; min-height: 44px; border: 0; background: none; font-size: 17px; outline: none; }
+
+.item-row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 6px 4px 6px 16px; }
+
+.list > .item-row + .item-row { border-top: 0.5px solid var(--separator); }
+
+.check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  border: 2px solid var(--tertiary);
+  color: var(--on-accent);
+}
+
+.check svg { width: 16px; height: 16px; stroke-width: 3; }
+
+.item-row.done .check { background: var(--accent); border-color: var(--accent); }
+
+.item-row.done .row-title { text-decoration: line-through; color: var(--secondary); }
+
+.icon-button.subtle { color: var(--tertiary); }
+
+.icon-button.subtle svg { width: 20px; height: 20px; }
+
+.link.small { padding: 0; font-size: 13px; text-transform: none; letter-spacing: 0; }
+
+.section-title .link { align-self: center; }
+
+/* ---------- Familia ---------- */
+
+.share-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+
+.list > .share-row + .share-row { border-top: 0.5px solid var(--separator); }
+
+.share-line { display: flex; justify-content: space-between; gap: 12px; }
+
+.share-bar { display: block; height: 6px; margin-top: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+
+.share-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+
+.members { padding: 14px 16px 16px; }
+
+.avatars { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px 10px; margin-bottom: 14px; }
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.avatar-name { font-size: 16px; }
+
+.primary-button svg { width: 20px; height: 20px; }
+
+.row-button.static { cursor: default; }
+
+.row-button.danger .row-title { color: var(--danger); }
+
+.list.group { margin-top: 24px; }
+
+/* ---------- Pestañas: número de pendientes ---------- */
+
+.tab-icon { position: relative; display: inline-flex; }
+
+.tab-badge {
+  position: absolute;
+  top: -4px;
+  right: -10px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
 /* ---------- Ajustes ---------- */
 
 .settings-text { margin: 0; padding: 12px 16px; font-size: 15px; color: var(--secondary); }

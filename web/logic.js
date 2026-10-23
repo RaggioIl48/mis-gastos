@@ -247,6 +247,114 @@ export function toCSV(rows) {
   return `${lines.join('\r\n')}\r\n`;
 }
 
+// ---------- Resúmenes para el hogar ----------
+
+/**
+ * Totales por mes de una persona, por nombre de categoría. Es lo único que se
+ * comparte con el hogar: { "2026-10": { total, count, byCategory: { Salud: 5000 } } }.
+ */
+export function summarizeByMonth(expenses, categories) {
+  const names = new Map(categories.map((category) => [category.id, category.name]));
+  const months = {};
+  for (const expense of expenses) {
+    const month = monthKeyOf(expense.date);
+    const summary = months[month] ??= { total: 0, count: 0, byCategory: {} };
+    const name = names.get(expense.categoryId) ?? 'Sin categoría';
+    summary.total += expense.amount;
+    summary.count += 1;
+    summary.byCategory[name] = (summary.byCategory[name] ?? 0) + expense.amount;
+  }
+  return months;
+}
+
+/** Compara dos resúmenes sin importar el orden de las categorías. */
+export function sameSummary(a, b) {
+  if (!a || !b || a.total !== b.total || a.count !== b.count) return false;
+  const keysA = Object.keys(a.byCategory ?? {});
+  const keysB = Object.keys(b.byCategory ?? {});
+  return keysA.length === keysB.length && keysA.every((key) => a.byCategory[key] === b.byCategory?.[key]);
+}
+
+/**
+ * Totales del hogar para un mes a partir de los resúmenes de cada persona.
+ * Las categorías se juntan sin importar mayúsculas ni tildes.
+ */
+export function householdMonth(summaries, monthKey) {
+  const ofMonth = summaries.filter((summary) => summary.month === monthKey);
+  const categories = new Map();
+  for (const summary of ofMonth) {
+    for (const [name, amount] of Object.entries(summary.byCategory ?? {})) {
+      const key = comparisonKey(name);
+      const entry = categories.get(key) ?? { name, total: 0 };
+      entry.total += amount;
+      categories.set(key, entry);
+    }
+  }
+  const total = ofMonth.reduce((sum, summary) => sum + (summary.total ?? 0), 0);
+  return {
+    total,
+    count: ofMonth.reduce((sum, summary) => sum + (summary.count ?? 0), 0),
+    byCategory: [...categories.values()]
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, LOCALE))
+      .map((entry) => ({ ...entry, share: total ? entry.total / total : 0 })),
+  };
+}
+
+/** "Ana" → "A"; para las iniciales del hogar. */
+export function initials(name) {
+  return String(name ?? '?').trim().split(/\s+/).slice(0, 2).map((part) => part.charAt(0)).join('').toLocaleUpperCase(LOCALE) || '?';
+}
+
+// ---------- Hogar e invitaciones ----------
+
+const HOUSEHOLD_ID = /^[A-Za-z0-9]{20}$/;
+
+export function isValidHouseholdId(id) {
+  return HOUSEHOLD_ID.test(String(id ?? ''));
+}
+
+export function inviteLink(origin, pathname, householdId) {
+  return `${origin}${pathname}?hogar=${householdId}`;
+}
+
+export function householdIdFromSearch(search) {
+  const id = new URLSearchParams(search).get('hogar');
+  return isValidHouseholdId(id) ? id : null;
+}
+
+// ---------- Lista de compras ----------
+
+export const MAX_SHOPPING_TEXT = 80;
+
+export function cleanShoppingText(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_SHOPPING_TEXT);
+}
+
+const byCreated = (a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0);
+
+export function pendingItems(items) {
+  return items.filter((item) => !item.done).sort(byCreated);
+}
+
+export function doneItems(items) {
+  return items.filter((item) => item.done).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0));
+}
+
+/** "Leche, pan y 2 más" */
+export function shoppingPreview(items, max = 2) {
+  const names = pendingItems(items).map((item) => item.text);
+  if (!names.length) return '';
+  const shown = names.slice(0, max);
+  const rest = names.length - shown.length;
+  if (rest > 0) return `${shown.join(', ')} y ${rest} más`;
+  if (shown.length === 1) return shown[0];
+  return `${shown.slice(0, -1).join(', ')} y ${shown.at(-1)}`;
+}
+
+export function pendingText(count) {
+  return count === 1 ? 'Falta 1 cosa por comprar' : `Faltan ${count} cosas por comprar`;
+}
+
 // ---------- Datos y copias de seguridad ----------
 
 export const BACKUP_FORMAT = 'mis-gastos-backup';

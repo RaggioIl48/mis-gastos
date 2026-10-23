@@ -1,10 +1,13 @@
+import * as cloud from './cloud.js';
 import {
-  addMonths, canDeleteCategory, CATEGORY_ICONS, createInitialData, dateKey, dayTitle, firstDayOfMonth,
-  formatCOP, groupByDay, isFilterActive, isLikelyDuplicate, isValidDayKey, makeBackup, matchesFilter,
-  monthKeyOf, monthTitle, parseData, parseErrorMessage, parseThousands, shortDate, sortExpenses,
-  thousandsInput, toCSV, total, dayTotal, usageText, validateCategoryName,
+  addMonths, canDeleteCategory, CATEGORY_ICONS, cleanShoppingText, comparisonKey, createInitialData, dateKey,
+  dayTitle, dayTotal, doneItems, firstDayOfMonth, formatCOP, groupByDay, householdIdFromSearch, householdMonth,
+  initials, inviteLink, isFilterActive, isLikelyDuplicate, isValidDayKey, makeBackup, matchesFilter, monthKeyOf,
+  monthTitle, parseData, parseErrorMessage, parseThousands, pendingItems, pendingText, sameSummary,
+  shoppingPreview, shortDate, sortExpenses, summarizeByMonth, thousandsInput, toCSV, total, usageText,
+  validateCategoryName,
 } from './logic.js';
-import { loadData, readPreference, requestPersistence, saveData, writePreference } from './store.js';
+import { readPreference, requestPersistence, writePreference } from './store.js';
 
 // ---------- Utilidades ----------
 
@@ -14,10 +17,6 @@ const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[c]);
 
-const makeId = () => (crypto.randomUUID
-  ? crypto.randomUUID()
-  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
-
 const ICONS = {
   plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   left: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>',
@@ -25,18 +24,43 @@ const ICONS = {
   chevron: '<svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
   filter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>',
   share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>',
+  cart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h9.2a1 1 0 0 0 1-.8L20 8H6.2"/><circle cx="9.5" cy="20" r="1.3"/><circle cx="17" cy="20" r="1.3"/></svg>',
 };
+
+const firstName = (name) => String(name ?? '').trim().split(/\s+/)[0] || 'Yo';
 
 // ---------- Estado ----------
 
 const today = () => dateKey();
 
+function emptyState() {
+  return {
+    phase: 'loading', // loading | setup | signin | app
+    user: null,
+    profile: null,
+    household: null,
+    data: { categories: [], expenses: [] },
+    summaries: [],
+    shopping: [],
+    loaded: { categories: false, expenses: false, summaries: false },
+    synced: { categories: false, expenses: false, summaries: false },
+    authError: '',
+  };
+}
+
 const state = {
-  data: { categories: [], expenses: [] },
+  ...emptyState(),
   tab: 'inicio',
   month: monthKeyOf(today()),
+  familyMonth: monthKeyOf(today()),
   filter: { categoryId: null, byDate: false, from: firstDayOfMonth(today()), to: today() },
 };
+
+const uid = () => state.user?.uid;
+const myName = () => state.profile?.name ?? firstName(state.user?.displayName);
+const householdId = () => state.household?.id ?? null;
 
 function sortedCategories() {
   return [...state.data.categories].sort((a, b) => a.order - b.order);
@@ -54,18 +78,16 @@ function usageCounts() {
   return counts;
 }
 
-/** Aplica un cambio, lo guarda y vuelve a dibujar. Si no se puede guardar, lo deshace. */
-function commit(mutate) {
-  const previous = structuredClone(state.data);
-  mutate(state.data);
-  if (!saveData(state.data)) {
-    state.data = previous;
-    toast('No se pudo guardar. Revisa el espacio del dispositivo.');
-    return false;
-  }
+/**
+ * Envía un cambio a la nube. El cambio se ve al instante (y sin Internet queda en cola);
+ * solo se avisa si la nube lo rechaza.
+ */
+function persist(promise) {
   requestPersistence();
-  render();
-  return true;
+  promise.catch((error) => {
+    console.error(error);
+    toast(error?.code === 'permission-denied' ? 'No tienes permiso para ese cambio.' : 'No se pudo guardar en la nube. Inténtalo de nuevo.');
+  });
 }
 
 // ---------- Componentes ----------
@@ -90,27 +112,77 @@ function expenseRow(expense, { showDate }) {
     </li>`;
 }
 
-function emptyState(title, message) {
+function emptyBox(title, message) {
   return `<div class="empty"><strong>${escapeHTML(title)}</strong><p>${escapeHTML(message)}</p></div>`;
 }
 
-// ---------- Pantallas ----------
+function monthNav(monthKey, scope) {
+  const isCurrent = monthKey === monthKeyOf(today());
+  return `
+    <div class="month-nav">
+      <button class="icon-button" type="button" data-action="month-prev" data-scope="${scope}" aria-label="Mes anterior">${ICONS.left}</button>
+      <button class="month-title" type="button" data-action="month-current" data-scope="${scope}" ${isCurrent ? 'aria-disabled="true"' : 'aria-label="Volver al mes actual"'}>${escapeHTML(monthTitle(monthKey))}</button>
+      <button class="icon-button" type="button" data-action="month-next" data-scope="${scope}" aria-label="Mes siguiente" ${isCurrent ? 'disabled' : ''}>${ICONS.right}</button>
+    </div>`;
+}
+
+// ---------- Pantallas sin sesión ----------
+
+function loadingView() {
+  return '<div class="center-screen"><div class="spinner" aria-hidden="true"></div><p>Cargando…</p></div>';
+}
+
+function setupView() {
+  return `
+    <div class="center-screen">
+      <h1>Falta configurar</h1>
+      <p>Esta versión necesita los datos del proyecto de Firebase en <code>firebase-config.js</code>.</p>
+    </div>`;
+}
+
+function signInView() {
+  const invited = Boolean(readPreference('invitacion'));
+  return `
+    <section class="center-screen auth">
+      <img class="auth-icon" src="icons/icon-192.png" alt="" width="88" height="88">
+      <h1>Mis Gastos</h1>
+      <p>Registra tus gastos y compártelos con tu hogar. Cada persona ve solo sus propios gastos; en <strong>Familia</strong> se ven los totales.</p>
+      ${invited ? '<p class="auth-note">Te invitaron a un hogar. Inicia sesión para unirte.</p>' : ''}
+      <button class="primary-button google" type="button" data-action="sign-in">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" stroke="none" opacity=".8" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" stroke="none" opacity=".6" d="M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9z"/><path fill="currentColor" stroke="none" opacity=".9" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.5L6.4 10C7.2 7.8 9.4 6 12 6z"/></svg>
+        <span>Continuar con Google</span>
+      </button>
+      <p class="form-error" role="alert">${escapeHTML(state.authError)}</p>
+    </section>`;
+}
+
+// ---------- Pestañas ----------
+
+function shoppingBanner() {
+  const pending = pendingItems(state.shopping);
+  if (!pending.length) return '';
+  return `
+    <button class="banner" type="button" data-action="go-tab" data-tab="lista">
+      <span class="banner-icon" aria-hidden="true">${ICONS.cart}</span>
+      <span class="row-texts">
+        <span class="row-title">${escapeHTML(pendingText(pending.length))}</span>
+        <span class="row-subtitle">${escapeHTML(shoppingPreview(state.shopping))}</span>
+      </span>
+      ${ICONS.chevron}
+    </button>`;
+}
 
 function homeView() {
   const now = today();
-  const currentMonth = monthKeyOf(now);
-  const isCurrent = state.month === currentMonth;
+  const isCurrent = state.month === monthKeyOf(now);
   const expenses = sortExpenses(state.data.expenses);
   const monthItems = expenses.filter((expense) => monthKeyOf(expense.date) === state.month);
 
   return `
     <header class="title-bar"><h1>Mis Gastos</h1></header>
+    ${shoppingBanner()}
     <section class="card summary" aria-label="Resumen">
-      <div class="month-nav">
-        <button class="icon-button" type="button" data-action="month-prev" aria-label="Mes anterior">${ICONS.left}</button>
-        <button class="month-title" type="button" data-action="month-current" ${isCurrent ? 'aria-disabled="true"' : 'aria-label="Volver al mes actual"'}>${escapeHTML(monthTitle(state.month))}</button>
-        <button class="icon-button" type="button" data-action="month-next" aria-label="Mes siguiente" ${isCurrent ? 'disabled' : ''}>${ICONS.right}</button>
-      </div>
+      ${monthNav(state.month, 'home')}
       <p class="summary-label">Total del mes</p>
       <p class="summary-total">${formatCOP(total(monthItems))}</p>
       <div class="summary-row"><span>Hoy</span><strong>${formatCOP(dayTotal(expenses, now))}</strong></div>
@@ -119,7 +191,7 @@ function homeView() {
     <h2 class="section-title">${isCurrent ? 'Últimos movimientos' : 'Movimientos del mes'}</h2>
     ${monthItems.length
       ? `<ul class="list">${monthItems.map((e) => expenseRow(e, { showDate: true })).join('')}</ul>`
-      : emptyState('Sin gastos', isCurrent ? 'Aún no has registrado gastos este mes.' : 'No hay gastos registrados en este mes.')}
+      : emptyBox('Sin gastos', isCurrent ? 'Aún no has registrado gastos este mes.' : 'No hay gastos registrados en este mes.')}
     <div class="add-bar">
       <button class="add-button" type="button" data-action="add-expense">${ICONS.plus}<span>Añadir gasto</span></button>
     </div>`;
@@ -129,8 +201,8 @@ function filterDescription(filter) {
   const parts = [];
   if (filter.categoryId) parts.push(categoryById(filter.categoryId)?.name ?? 'Categoría');
   if (filter.byDate) {
-    const [from, to] = [filter.from, filter.to].sort();
-    parts.push(from === to ? shortDate(from) : `${shortDate(from)} – ${shortDate(to)}`);
+    const [from, to] = [filter.from, filter.to].filter(Boolean).sort();
+    parts.push(!to || from === to ? shortDate(from) : `${shortDate(from)} – ${shortDate(to)}`);
   }
   return parts.join(' · ');
 }
@@ -147,8 +219,8 @@ function historyView() {
   let empty = '';
   if (!items.length) {
     empty = active
-      ? emptyState('Sin resultados', 'Ningún gasto coincide con los filtros.')
-      : emptyState('Sin gastos', 'Los gastos que registres aparecerán aquí.');
+      ? emptyBox('Sin resultados', 'Ningún gasto coincide con los filtros.')
+      : emptyBox('Sin gastos', 'Los gastos que registres aparecerán aquí.');
   }
 
   return `
@@ -167,10 +239,88 @@ function historyView() {
       </div>` : ''}
     ${items.length ? `
       <section class="card summary" aria-label="Total">
-        <div class="summary-row" style="border-top:0"><span>${active ? 'Total filtrado' : 'Total registrado'}</span><strong>${formatCOP(total(items))}</strong></div>
+        <div class="summary-row first"><span>${active ? 'Total filtrado' : 'Total registrado'}</span><strong>${formatCOP(total(items))}</strong></div>
         <div class="summary-row"><span>Gastos</span><strong>${items.length}</strong></div>
       </section>` : ''}
     ${groups}${empty}`;
+}
+
+function shoppingRow(item) {
+  const by = item.createdBy === uid() ? 'ti' : (item.createdByName || 'alguien del hogar');
+  return `
+    <li class="item-row ${item.done ? 'done' : ''}">
+      <button class="check" type="button" data-action="toggle-item" data-id="${escapeHTML(item.id)}"
+        role="checkbox" aria-checked="${item.done}" aria-label="${item.done ? 'Desmarcar' : 'Marcar como comprado'}: ${escapeHTML(item.text)}">${item.done ? ICONS.check : ''}</button>
+      <span class="row-texts">
+        <span class="row-title">${escapeHTML(item.text)}</span>
+        <span class="row-subtitle">${item.done ? 'Comprado' : `Añadido por ${escapeHTML(by)}`}</span>
+      </span>
+      <button class="icon-button subtle" type="button" data-action="delete-item" data-id="${escapeHTML(item.id)}" aria-label="Eliminar ${escapeHTML(item.text)}">${ICONS.trash}</button>
+    </li>`;
+}
+
+function badgeSupported() {
+  return 'setAppBadge' in navigator && 'Notification' in window;
+}
+
+function listView() {
+  const pending = pendingItems(state.shopping);
+  const done = doneItems(state.shopping);
+  const offerBadge = badgeSupported() && Notification.permission === 'default' && isStandalone();
+
+  return `
+    <header class="title-bar"><h1>Lista</h1></header>
+    <form class="add-item card" data-form="add-item" autocomplete="off">
+      <label class="visually-hidden" for="new-item">Algo que falta</label>
+      <input id="new-item" maxlength="80" placeholder="Añadir algo que falta…" enterkeyhint="done">
+      <button class="icon-button" type="submit" aria-label="Añadir a la lista">${ICONS.plus}</button>
+    </form>
+    ${pending.length
+      ? `<h2 class="section-title">${escapeHTML(pendingText(pending.length))}</h2><ul class="list">${pending.map(shoppingRow).join('')}</ul>`
+      : `<div class="group">${emptyBox('Nada pendiente', 'Lo que añadas aquí lo verán todas las personas del hogar.')}</div>`}
+    ${done.length ? `
+      <h2 class="section-title"><span>Comprado</span><button class="link small" type="button" data-action="clear-done">Borrar comprados</button></h2>
+      <ul class="list">${done.map(shoppingRow).join('')}</ul>` : ''}
+    ${offerBadge ? `
+      <button class="banner subtle" type="button" data-action="enable-badge">
+        <span class="banner-icon" aria-hidden="true">🔔</span>
+        <span class="row-texts"><span class="row-title">Mostrar pendientes en el icono</span><span class="row-subtitle">Verás el número de cosas por comprar sobre el icono de la app</span></span>
+      </button>` : ''}
+    <p class="section-note">La lista es compartida con tu hogar. Al abrir la app, Inicio te recuerda lo que falta.</p>`;
+}
+
+function familyView() {
+  const household = state.household;
+  if (!household) return `<header class="title-bar"><h1>Familia</h1></header>${loadingView()}`;
+  const month = householdMonth(state.summaries, state.familyMonth);
+  const myIcons = new Map(state.data.categories.map((c) => [comparisonKey(c.name), c.icon]));
+  const members = household.members.map((id) => ({ id, name: household.names?.[id] ?? 'Miembro' }));
+
+  const rows = month.byCategory.map((entry) => `
+    <li class="share-row">
+      <span class="row-icon" aria-hidden="true">${escapeHTML(myIcons.get(comparisonKey(entry.name)) ?? '🏷️')}</span>
+      <span class="row-texts">
+        <span class="share-line"><span class="row-title">${escapeHTML(entry.name)}</span><span class="row-amount">${formatCOP(entry.total)}</span></span>
+        <span class="share-bar" aria-hidden="true"><span style="width:${Math.max(2, Math.round(entry.share * 100))}%"></span></span>
+      </span>
+    </li>`).join('');
+
+  return `
+    <header class="title-bar"><h1>Familia</h1></header>
+    <section class="card summary" aria-label="Total del hogar">
+      ${monthNav(state.familyMonth, 'family')}
+      <p class="summary-label">Total del hogar</p>
+      <p class="summary-total">${formatCOP(month.total)}</p>
+      <div class="summary-row"><span>Movimientos</span><strong>${month.count}</strong></div>
+    </section>
+    <h2 class="section-title">Por categoría</h2>
+    ${rows ? `<ul class="list">${rows}</ul>` : emptyBox('Sin gastos', 'Nadie del hogar ha registrado gastos en este mes.')}
+    <h2 class="section-title">Hogar</h2>
+    <div class="card members">
+      <div class="avatars">${members.map((m) => `<span class="avatar" title="${escapeHTML(m.name)}">${escapeHTML(initials(m.name))}</span><span class="avatar-name">${escapeHTML(m.id === uid() ? `${m.name} (tú)` : m.name)}</span>`).join('')}</div>
+      <button class="primary-button" type="button" data-action="invite">${ICONS.share}<span>Invitar a alguien</span></button>
+    </div>
+    <p class="section-note">Aquí solo se ven los totales del hogar. El detalle de cada gasto lo ve únicamente quien lo registró.</p>`;
 }
 
 function categoriesView() {
@@ -187,6 +337,7 @@ function categoriesView() {
     </li>`).join('');
 
   return `
+    <button class="back-button" type="button" data-action="go-tab" data-tab="ajustes">${ICONS.left}<span>Ajustes</span></button>
     <header class="title-bar">
       <h1>Categorías</h1>
       <div class="title-actions">
@@ -196,7 +347,7 @@ function categoriesView() {
     ${categories.length
       ? `<ul class="list">${rows}</ul>
          <p class="section-note">Toca una categoría para cambiar su nombre o icono. Solo se pueden eliminar las que no tienen gastos; las demás se conservan en el historial.</p>`
-      : emptyState('Sin categorías', 'Crea una categoría para empezar a registrar gastos.')}`;
+      : emptyBox('Sin categorías', 'Crea una categoría para empezar a registrar gastos.')}`;
 }
 
 function isStandalone() {
@@ -205,43 +356,85 @@ function isStandalone() {
 
 function settingsView() {
   const count = state.data.expenses.length;
+  const members = state.household
+    ? state.household.members.map((id) => state.household.names?.[id] ?? 'Miembro').join(', ')
+    : '…';
   return `
     <header class="title-bar"><h1>Ajustes</h1></header>
     ${isStandalone() ? '' : `
       <h2 class="section-title">Instalar en el iPhone</h2>
-      <div class="card">
-        <p class="settings-text">En Safari toca <strong>Compartir</strong> y luego <strong>Añadir a pantalla de inicio</strong>. Úsala siempre desde ese icono: así funciona sin Internet y el iPhone conserva tus datos.</p>
-      </div>`}
+      <div class="card"><p class="settings-text">En Safari toca <strong>Compartir</strong> y luego <strong>Añadir a pantalla de inicio</strong>.</p></div>`}
+
+    <h2 class="section-title">Cuenta</h2>
+    <ul class="list">
+      <li><button class="row-button" type="button" data-action="edit-name"><span class="row-texts"><span class="row-title">${escapeHTML(myName())}</span><span class="row-subtitle">${escapeHTML(state.user?.email ?? '')}</span></span><span class="row-detail">Cambiar nombre</span>${ICONS.chevron}</button></li>
+      <li><button class="row-button" type="button" data-action="go-tab" data-tab="categorias"><span class="row-texts"><span class="row-title">Categorías</span></span><span class="row-detail">${state.data.categories.length}</span>${ICONS.chevron}</button></li>
+    </ul>
+
+    <h2 class="section-title">Hogar</h2>
+    <ul class="list">
+      <li><div class="row-button static"><span class="row-texts"><span class="row-title">Miembros</span><span class="row-subtitle">${escapeHTML(members)}</span></span></div></li>
+      <li><button class="row-button" type="button" data-action="invite"><span class="row-texts"><span class="row-title">Invitar a alguien</span><span class="row-subtitle">Envía un enlace para unirse a tu hogar</span></span>${ICONS.chevron}</button></li>
+      ${(state.household?.members.length ?? 0) > 1 ? '<li><button class="row-button danger" type="button" data-action="leave-household"><span class="row-texts"><span class="row-title">Salir del hogar</span></span></button></li>' : ''}
+    </ul>
 
     <h2 class="section-title">Copia de seguridad</h2>
     <ul class="list">
-      <li><button class="row-button" type="button" data-action="export-backup"><span class="row-texts"><span class="row-title">Exportar copia</span><span class="row-subtitle">Guarda un archivo con todos tus gastos y categorías</span></span>${ICONS.chevron}</button></li>
-      <li><button class="row-button" type="button" data-action="import-backup"><span class="row-texts"><span class="row-title">Importar copia</span><span class="row-subtitle">Reemplaza los datos actuales por los de un archivo</span></span>${ICONS.chevron}</button></li>
+      <li><button class="row-button" type="button" data-action="export-backup"><span class="row-texts"><span class="row-title">Exportar copia</span><span class="row-subtitle">Guarda un archivo con tus gastos y categorías</span></span>${ICONS.chevron}</button></li>
+      <li><button class="row-button" type="button" data-action="import-backup"><span class="row-texts"><span class="row-title">Importar copia</span><span class="row-subtitle">Reemplaza tus datos por los de un archivo</span></span>${ICONS.chevron}</button></li>
       <li><button class="row-button" type="button" data-action="export-all-csv" ${count ? '' : 'disabled'}><span class="row-texts"><span class="row-title">Exportar todo a CSV</span><span class="row-subtitle">Para abrir en Excel o Numbers</span></span>${ICONS.chevron}</button></li>
     </ul>
     <input id="backup-file" class="visually-hidden" type="file" accept=".json,application/json" tabindex="-1" aria-hidden="true">
-    <p class="section-note">Tus datos se guardan solo en este dispositivo; no se envían a ningún servidor. Si borras los datos de Safari o eliminas la app de la pantalla de inicio, se pierden. Exporta una copia de vez en cuando.</p>
+    <p class="section-note">Tus gastos se guardan en tu cuenta y solo tú puedes verlos. Con el hogar se comparten los totales por categoría y la lista de compras.</p>
 
-    <h2 class="section-title">Datos</h2>
-    <div class="card">
-      <div class="summary" style="padding-top:0;padding-bottom:0">
-        <div class="summary-row" style="border-top:0"><span>Gastos registrados</span><strong>${count}</strong></div>
-        <div class="summary-row"><span>Total registrado</span><strong>${formatCOP(total(state.data.expenses))}</strong></div>
-        <div class="summary-row"><span>Categorías</span><strong>${state.data.categories.length}</strong></div>
-      </div>
-    </div>`;
+    <ul class="list group">
+      <li><button class="row-button danger" type="button" data-action="sign-out"><span class="row-texts"><span class="row-title">Cerrar sesión</span></span></button></li>
+    </ul>`;
 }
 
-const VIEWS = { inicio: homeView, historial: historyView, categorias: categoriesView, ajustes: settingsView };
+const VIEWS = {
+  inicio: homeView, historial: historyView, lista: listView, familia: familyView, ajustes: settingsView, categorias: categoriesView,
+};
+const TAB_OF_VIEW = { categorias: 'ajustes' };
 
+/** Vuelve a dibujar la pantalla sin perder lo que se esté escribiendo en ella. */
 function render() {
   const view = $('#view');
-  view.innerHTML = VIEWS[state.tab]();
-  view.classList.toggle('with-add-bar', state.tab === 'inicio');
+  const active = document.activeElement;
+  const keep = active?.id && view.contains(active) && 'value' in active
+    ? { id: active.id, value: active.value, start: active.selectionStart, end: active.selectionEnd }
+    : null;
+
+  let html;
+  if (state.phase === 'loading') html = loadingView();
+  else if (state.phase === 'setup') html = setupView();
+  else if (state.phase === 'signin') html = signInView();
+  else html = VIEWS[state.tab]();
+
+  view.innerHTML = html;
+  const inApp = state.phase === 'app';
+  document.body.classList.toggle('no-tabs', !inApp);
+  view.classList.toggle('with-add-bar', inApp && state.tab === 'inicio');
+  const currentTab = TAB_OF_VIEW[state.tab] ?? state.tab;
   document.querySelectorAll('.tab').forEach((tab) => {
-    if (tab.dataset.tab === state.tab) tab.setAttribute('aria-current', 'page');
+    if (tab.dataset.tab === currentTab) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   });
+  const listCount = pendingItems(state.shopping).length;
+  const badge = $('.tab[data-tab="lista"] .tab-badge');
+  if (badge) {
+    badge.textContent = listCount > 9 ? '9+' : String(listCount);
+    badge.hidden = !inApp || !listCount;
+  }
+
+  if (keep) {
+    const input = document.getElementById(keep.id);
+    if (input) {
+      input.value = keep.value;
+      input.focus({ preventScroll: true });
+      try { input.setSelectionRange(keep.start, keep.end); } catch { /* tipo sin selección */ }
+    }
+  }
 }
 
 function setTab(tab) {
@@ -324,7 +517,7 @@ function openExpenseForm(expense = null) {
   const now = today();
   const categories = sortedCategories();
   if (!categories.length) {
-    alertDialog('No hay categorías', 'Crea una categoría en la pestaña Categorías antes de registrar gastos.');
+    alertDialog('No hay categorías', 'Crea una categoría en Ajustes → Categorías antes de registrar gastos.');
     return;
   }
 
@@ -432,22 +625,15 @@ function openExpenseForm(expense = null) {
         });
         if (!proceed) { saving = false; update(); return; }
       }
-      if (commit((data) => data.expenses.push({ id: makeId(), ...candidate }))) {
-        writePreference('ultimaCategoria', selectedCategory);
-        closeSheet();
-        toast(`Gasto de ${formatCOP(result.pesos)} guardado`);
-        return;
-      }
-    } else if (commit((data) => {
-      const target = data.expenses.find((item) => item.id === expense.id);
-      if (target) Object.assign(target, fields);
-    })) {
+      persist(cloud.saveExpense(uid(), { id: cloud.newId('users', uid(), 'expenses'), ...candidate }));
+      writePreference('ultimaCategoria', selectedCategory);
+      closeSheet();
+      toast(`Gasto de ${formatCOP(result.pesos)} guardado`);
+    } else {
+      persist(cloud.saveExpense(uid(), { ...expense, ...fields }));
       closeSheet();
       toast('Cambios guardados');
-      return;
     }
-    saving = false;
-    update();
   });
 
   $('#delete-expense', sheet)?.addEventListener('click', async () => {
@@ -457,7 +643,8 @@ function openExpenseForm(expense = null) {
       confirmLabel: 'Eliminar',
       destructive: true,
     });
-    if (proceed && commit((data) => { data.expenses = data.expenses.filter((item) => item.id !== expense.id); })) {
+    if (proceed) {
+      persist(cloud.deleteExpense(uid(), expense.id));
       closeSheet();
       toast('Gasto eliminado');
     }
@@ -581,18 +768,14 @@ function openCategoryEditor(category = null) {
     event.preventDefault();
     if (validate()) return;
     const name = nameInput.value.trim();
-    const saved = commit((data) => {
-      if (category) {
-        Object.assign(data.categories.find((c) => c.id === category.id), { name, icon });
-      } else {
-        const nextOrder = Math.max(-1, ...data.categories.map((c) => c.order)) + 1;
-        data.categories.push({ id: makeId(), name, icon, order: nextOrder });
-      }
-    });
-    if (saved) {
-      closeSheet();
-      toast(category ? 'Categoría actualizada' : 'Categoría creada');
+    if (category) {
+      persist(cloud.saveCategory(uid(), { ...category, name, icon }));
+    } else {
+      const order = Math.max(-1, ...state.data.categories.map((c) => c.order)) + 1;
+      persist(cloud.saveCategory(uid(), { id: cloud.newId('users', uid(), 'categories'), name, icon, order }));
     }
+    closeSheet();
+    toast(category ? 'Categoría actualizada' : 'Categoría creada');
   });
 
   $('#delete-category', sheet)?.addEventListener('click', async () => {
@@ -600,12 +783,9 @@ function openCategoryEditor(category = null) {
       await alertDialog('No se puede eliminar', `“${category.name}” se usa en ${usageText(count)}. Se conserva para no alterar tu historial, pero puedes cambiarle el nombre.`);
       return;
     }
-    const proceed = await confirmDialog({
-      title: `¿Eliminar “${category.name}”?`,
-      confirmLabel: 'Eliminar',
-      destructive: true,
-    });
-    if (proceed && commit((data) => { data.categories = data.categories.filter((c) => c.id !== category.id); })) {
+    const proceed = await confirmDialog({ title: `¿Eliminar “${category.name}”?`, confirmLabel: 'Eliminar', destructive: true });
+    if (proceed) {
+      persist(cloud.deleteCategory(uid(), category.id));
       closeSheet();
       toast('Categoría eliminada');
     }
@@ -613,6 +793,36 @@ function openCategoryEditor(category = null) {
 
   validate();
   if (!category) nameInput.focus();
+}
+
+// ---------- Nombre ----------
+
+function openNameEditor() {
+  const sheet = openSheet(`
+    <form id="name-form" novalidate>
+      <div class="sheet-header">
+        <button type="button" class="link" data-close>Cancelar</button>
+        <h2 id="name-title">Tu nombre</h2>
+        <button type="submit" class="link strong">Guardar</button>
+      </div>
+      <div class="sheet-body">
+        <div class="group fields">
+          <label class="field"><span>Nombre</span><input id="profile-name" maxlength="30" autocomplete="given-name" value="${escapeHTML(myName())}"></label>
+        </div>
+        <p class="section-note">Así te verán en tu hogar (lista de compras y miembros).</p>
+      </div>
+    </form>`, 'name-title');
+  const input = $('#profile-name', sheet);
+  $('#name-form', sheet).addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = input.value.trim().slice(0, 30);
+    if (!name) return;
+    persist(cloud.updateProfile(uid(), { name }));
+    if (householdId()) persist(cloud.renameInHousehold(uid(), householdId(), name));
+    closeSheet();
+    toast('Nombre actualizado');
+  });
+  input.focus();
 }
 
 // ---------- Exportar e importar ----------
@@ -668,23 +878,288 @@ async function importBackup(file) {
     confirmLabel: 'Reemplazar',
     destructive: true,
   });
-  if (proceed && commit((current) => {
-    current.categories = data.categories;
-    current.expenses = data.expenses;
-  })) {
+  if (!proceed) return;
+  toast('Importando…');
+  try {
+    await cloud.replaceAllData(uid(), state.data, data);
     toast('Copia importada');
+  } catch (error) {
+    console.error(error);
+    await alertDialog('No se pudo importar', 'Revisa tu conexión a Internet e inténtalo de nuevo.');
   }
+}
+
+// ---------- Hogar ----------
+
+async function shareInvite() {
+  if (!householdId()) return;
+  const url = inviteLink(location.origin, location.pathname, householdId());
+  const text = `${myName()} te invita a su hogar en Mis Gastos. Abre el enlace en Safari e inicia sesión:`;
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'Mis Gastos', text, url });
+      return;
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Enlace copiado');
+  } catch {
+    await alertDialog('Enlace de invitación', url);
+  }
+}
+
+let householdBusy = false;
+
+/** Se une al hogar de la invitación guardada o, si no hay, crea un hogar propio. */
+async function settleHousehold() {
+  if (householdBusy || !state.profile) return;
+  const invite = readPreference('invitacion');
+  const current = state.profile.householdId;
+  if (current && (!invite || invite === current)) {
+    if (invite) writePreference('invitacion', '');
+    return;
+  }
+
+  householdBusy = true;
+  try {
+    if (invite) {
+      const target = await cloud.readHousehold(invite).catch(() => null);
+      writePreference('invitacion', '');
+      if (!target) {
+        await alertDialog('Invitación no válida', 'El enlace no corresponde a ningún hogar. Pide a quien te invitó que lo envíe de nuevo.');
+      } else {
+        const names = Object.values(target.names ?? {}).join(', ') || 'otra persona';
+        const alone = !state.household || state.household.members.length <= 1;
+        const proceed = await confirmDialog({
+          title: `¿Unirte al hogar de ${names}?`,
+          message: alone
+            ? 'Verán los totales por categoría que compartas. Tus gastos detallados siguen siendo solo tuyos.'
+            : 'Saldrás de tu hogar actual. Tus gastos detallados siguen siendo solo tuyos.',
+          confirmLabel: 'Unirme',
+        });
+        if (proceed) {
+          if (current) await cloud.leaveHousehold(uid(), current, mySummaryMonths());
+          await cloud.joinHousehold(uid(), myName(), invite);
+          toast('Te uniste al hogar');
+          return;
+        }
+      }
+    }
+    if (!state.profile.householdId) await cloud.createHousehold(uid(), myName());
+  } catch (error) {
+    console.error(error);
+    toast('No se pudo configurar el hogar. Revisa tu conexión.');
+  } finally {
+    householdBusy = false;
+  }
+}
+
+function mySummaryMonths() {
+  return state.summaries.filter((summary) => summary.uid === uid()).map((summary) => summary.month);
+}
+
+async function leaveHousehold() {
+  const proceed = await confirmDialog({
+    title: '¿Salir del hogar?',
+    message: 'Dejarán de ver tus totales y tú dejarás de ver los suyos y la lista compartida. Tus gastos no se borran.',
+    confirmLabel: 'Salir',
+    destructive: true,
+  });
+  if (!proceed) return;
+  try {
+    await cloud.leaveHousehold(uid(), householdId(), mySummaryMonths());
+    toast('Saliste del hogar');
+  } catch (error) {
+    console.error(error);
+    toast('No se pudo salir del hogar. Revisa tu conexión.');
+  }
+}
+
+// ---------- Sincronización ----------
+
+let summaryTimer = null;
+
+/** Publica en el hogar solo los totales por mes y categoría de esta persona. */
+function scheduleSummarySync() {
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(syncSummaries, 400);
+}
+
+function syncSummaries() {
+  const hid = householdId();
+  const ready = hid && state.synced.expenses && state.synced.categories && state.synced.summaries
+    && state.household.members.includes(uid());
+  if (!ready) return;
+  const mine = summarizeByMonth(state.data.expenses, state.data.categories);
+  const published = new Map(state.summaries.filter((s) => s.uid === uid()).map((s) => [s.month, s]));
+  for (const [month, summary] of Object.entries(mine)) {
+    const existing = published.get(month);
+    if (!sameSummary(summary, existing) || existing.name !== myName()) {
+      persist(cloud.saveSummary(hid, uid(), myName(), month, summary));
+    }
+  }
+  for (const month of published.keys()) {
+    if (!mine[month]) persist(cloud.deleteSummary(hid, uid(), month));
+  }
+}
+
+let seeding = false;
+
+function maybeSeedCategories() {
+  if (seeding || !state.profile || !state.synced.categories) return;
+  if (state.data.categories.length) {
+    if (!state.profile.seeded) persist(cloud.updateProfile(uid(), { seeded: true }));
+    return;
+  }
+  if (state.profile.seeded) return;
+  seeding = true;
+  const { categories } = createInitialData(() => cloud.newId('users', uid(), 'categories'));
+  cloud.seedCategories(uid(), categories).catch(() => {}).finally(() => { seeding = false; });
+}
+
+function updateAppBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const count = pendingItems(state.shopping).length;
+  (count ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(() => {});
+}
+
+let personalWatchers = [];
+let householdWatchers = [];
+let watchedHousehold = null;
+
+const stop = (list) => list.splice(0).forEach((unsubscribe) => unsubscribe());
+
+function onWatchError(error) {
+  console.error(error);
+  if (error?.code === 'permission-denied') return;
+  toast('Sin conexión con la nube. Los cambios se enviarán al volver.');
+}
+
+function dataChanged() {
+  if (state.phase === 'app') render();
+  scheduleSummarySync();
+}
+
+function watchHousehold(hid) {
+  if (hid === watchedHousehold) return;
+  stop(householdWatchers);
+  watchedHousehold = hid;
+  state.household = null;
+  state.summaries = [];
+  state.shopping = [];
+  state.loaded.summaries = false;
+  state.synced.summaries = false;
+  if (!hid) return;
+
+  // La lista y los totales solo se piden cuando el servidor confirma que esta persona
+  // es miembro del hogar; antes, las reglas los rechazarían y la escucha se cerraría.
+  let sharedStarted = false;
+  const startShared = () => {
+    sharedStarted = true;
+    householdWatchers.push(
+      cloud.watchCollection(['households', hid, 'summaries'], (items, meta) => {
+        state.summaries = items;
+        state.loaded.summaries = true;
+        if (!meta.fromCache) state.synced.summaries = true;
+        dataChanged();
+      }, onWatchError),
+      cloud.watchCollection(['households', hid, 'shopping'], (items) => {
+        state.shopping = items;
+        updateAppBadge();
+        if (state.phase === 'app') render();
+      }, onWatchError),
+    );
+  };
+
+  householdWatchers.push(cloud.watchHousehold(hid, (household, meta) => {
+    state.household = household;
+    const member = household?.members.includes(uid());
+    if (member && !sharedStarted && !meta.hasPendingWrites) startShared();
+    dataChanged();
+  }, onWatchError));
+}
+
+function handleUser(user) {
+  stop(personalWatchers);
+  watchHousehold(null);
+  closeSheet();
+  Object.assign(state, emptyState());
+  state.user = user;
+
+  if (!user) {
+    state.phase = 'signin';
+    render();
+    const testUser = new URLSearchParams(location.search).get('usuaria');
+    if (cloud.usingEmulators && testUser) cloud.signInForTesting(testUser).catch(console.error);
+    return;
+  }
+
+  render();
+  const id = user.uid;
+  personalWatchers.push(
+    cloud.watchProfile(id, (profile, meta) => {
+      if (!profile) {
+        // Sin perfil en la nube: es la primera vez. Se espera a la respuesta del servidor
+        // para no sobrescribir un perfil que exista pero no esté en este dispositivo.
+        if (!meta.fromCache) persist(cloud.createProfile(id, { name: firstName(user.displayName), email: user.email ?? '' }));
+        return;
+      }
+      state.profile = profile;
+      watchHousehold(profile.householdId);
+      if (!meta.fromCache) settleHousehold();
+      maybeSeedCategories();
+      if (state.phase !== 'app') {
+        state.phase = 'app';
+        state.tab = 'inicio';
+      }
+      dataChanged();
+    }, onWatchError),
+    cloud.watchCollection(['users', id, 'categories'], (items, meta) => {
+      state.data.categories = items;
+      state.loaded.categories = true;
+      if (!meta.fromCache) state.synced.categories = true;
+      maybeSeedCategories();
+      dataChanged();
+    }, onWatchError),
+    cloud.watchCollection(['users', id, 'expenses'], (items, meta) => {
+      state.data.expenses = items;
+      state.loaded.expenses = true;
+      if (!meta.fromCache) state.synced.expenses = true;
+      dataChanged();
+    }, onWatchError),
+  );
 }
 
 // ---------- Acciones ----------
 
+function shiftMonth(scope, delta) {
+  const key = scope === 'family' ? 'familyMonth' : 'month';
+  const next = delta === 0 ? monthKeyOf(today()) : addMonths(state[key], delta);
+  if (next <= monthKeyOf(today())) state[key] = next;
+  render();
+}
+
 const ACTIONS = {
-  'month-prev': () => { state.month = addMonths(state.month, -1); render(); },
-  'month-next': () => {
-    const next = addMonths(state.month, 1);
-    if (next <= monthKeyOf(today())) { state.month = next; render(); }
+  'sign-in': () => {
+    state.authError = '';
+    cloud.signInWithGoogle().catch((error) => {
+      console.error(error);
+      state.authError = 'No se pudo iniciar sesión. Revisa tu conexión e inténtalo de nuevo.';
+      render();
+    });
   },
-  'month-current': () => { state.month = monthKeyOf(today()); render(); },
+  'sign-out': async () => {
+    if (await confirmDialog({ title: '¿Cerrar sesión?', message: 'Tus datos siguen guardados en tu cuenta.', confirmLabel: 'Cerrar sesión' })) {
+      cloud.signOutUser();
+    }
+  },
+  'go-tab': (el) => setTab(el.dataset.tab),
+  'month-prev': (el) => shiftMonth(el.dataset.scope, -1),
+  'month-next': (el) => shiftMonth(el.dataset.scope, 1),
+  'month-current': (el) => shiftMonth(el.dataset.scope, 0),
   'add-expense': () => openExpenseForm(),
   'edit-expense': (el) => {
     const expense = state.data.expenses.find((item) => item.id === el.dataset.id);
@@ -701,23 +1176,65 @@ const ACTIONS = {
   },
   'export-backup': () => exportBackup(),
   'import-backup': () => $('#backup-file')?.click(),
+  'edit-name': () => openNameEditor(),
+  invite: () => shareInvite(),
+  'leave-household': () => leaveHousehold(),
+  'toggle-item': (el) => {
+    const item = state.shopping.find((entry) => entry.id === el.dataset.id);
+    if (item && householdId()) persist(cloud.setShoppingDone(householdId(), item.id, !item.done, uid()));
+  },
+  'delete-item': (el) => {
+    if (householdId()) persist(cloud.deleteShoppingItem(householdId(), el.dataset.id));
+  },
+  'clear-done': async () => {
+    const done = doneItems(state.shopping);
+    if (!done.length || !householdId()) return;
+    if (await confirmDialog({ title: `¿Borrar ${done.length === 1 ? '1 cosa comprada' : `${done.length} cosas compradas`}?`, confirmLabel: 'Borrar', destructive: true })) {
+      persist(cloud.deleteShoppingItems(householdId(), done.map((item) => item.id)));
+    }
+  },
+  'enable-badge': async () => {
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        updateAppBadge();
+        toast('Listo: verás los pendientes en el icono');
+      }
+    } catch {
+      // El navegador no lo permite.
+    }
+    render();
+  },
 };
+
+function addShoppingItem(form) {
+  const input = $('#new-item', form);
+  const text = cleanShoppingText(input.value);
+  if (!text || !householdId()) return;
+  persist(cloud.addShoppingItem(householdId(), uid(), myName(), text));
+  input.value = '';
+  input.focus();
+}
 
 // ---------- Inicio ----------
 
-function start() {
-  const loaded = loadData();
-  if (loaded.status === 'ok') {
-    state.data = loaded.data;
-  } else {
-    state.data = createInitialData(makeId);
-    if (loaded.status !== 'unavailable') saveData(state.data);
+function registerServiceWorker() {
+  const isLocal = cloud.usingEmulators;
+  if ('serviceWorker' in navigator && (!isLocal || new URLSearchParams(location.search).has('sw'))) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+}
 
+function start() {
   const view = $('#view');
   view.addEventListener('click', (event) => {
     const target = event.target.closest('[data-action]');
     if (target && !target.disabled) ACTIONS[target.dataset.action]?.(target);
+  });
+  view.addEventListener('submit', (event) => {
+    if (event.target.dataset.form !== 'add-item') return;
+    event.preventDefault();
+    addShoppingItem(event.target);
   });
   view.addEventListener('change', (event) => {
     if (event.target.id !== 'backup-file') return;
@@ -734,18 +1251,28 @@ function start() {
     if (document.visibilityState === 'visible' && !$('#sheet-root').childElementCount) render();
   });
 
+  // Enlace de invitación: se guarda para usarlo después de iniciar sesión.
+  const invite = householdIdFromSearch(location.search);
+  if (invite) writePreference('invitacion', invite);
+  const params = new URLSearchParams(location.search);
+  if (params.has('hogar')) {
+    params.delete('hogar');
+    history.replaceState(null, '', location.pathname + (params.size ? `?${params}` : ''));
+  }
+
+  if (!cloud.startCloud()) {
+    state.phase = 'setup';
+    render();
+    return;
+  }
   render();
-
-  if (loaded.status === 'corrupt') {
-    alertDialog('Datos dañados', 'No se pudieron leer los datos guardados. Se apartó una copia y se empezó de nuevo. Puedes importar una copia de seguridad desde Ajustes.');
-  } else if (loaded.status === 'unavailable') {
-    alertDialog('Sin almacenamiento', 'Este navegador no permite guardar datos (¿modo privado?). Los gastos se perderán al cerrar.');
-  }
-
-  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
-  if ('serviceWorker' in navigator && (!isLocal || new URLSearchParams(location.search).has('sw'))) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  cloud.finishRedirect().catch((error) => {
+    console.error(error);
+    state.authError = 'No se pudo iniciar sesión. Inténtalo de nuevo.';
+    render();
+  });
+  cloud.onUserChanged(handleUser);
+  registerServiceWorker();
 }
 
 start();

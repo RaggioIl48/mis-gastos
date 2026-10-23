@@ -3,3 +3,8 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+node_modules/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

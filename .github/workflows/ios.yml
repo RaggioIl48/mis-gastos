@@ -2,9 +2,9 @@ name: iOS
 
 on:
   push:
-    paths-ignore: ["web/**", "README.md", ".claude/**"]
+    paths-ignore: ["web/**", "README.md", ".claude/**", "firestore.rules", "firebase.json", "rules-tests/**", "package.json", "package-lock.json"]
   pull_request:
-    paths-ignore: ["web/**", "README.md", ".claude/**"]
+    paths-ignore: ["web/**", "README.md", ".claude/**", "firestore.rules", "firebase.json", "rules-tests/**", "package.json", "package-lock.json"]
   workflow_dispatch:
 
 concurrency:

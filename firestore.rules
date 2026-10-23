@@ -1,0 +1,77 @@
+rules_version = '2';
+
+// Reglas de privacidad de Mis Gastos.
+// - Los gastos y categorías de cada persona solo los lee y escribe esa persona.
+// - El hogar solo comparte resúmenes (totales por mes y categoría) y la lista de compras.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(hid) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    // Datos personales: perfil, gastos y categorías.
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /households/{hid} {
+      // El identificador del hogar funciona como invitación: es aleatorio y solo se comparte por enlace.
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['members', 'names', 'createdBy', 'createdAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.members == [request.auth.uid];
+
+      // Cada persona solo puede añadirse, salirse o cambiar su propio nombre.
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'names'])
+        && request.resource.data.names.diff(resource.data.names).affectedKeys().hasOnly([request.auth.uid])
+        && (
+          (!(request.auth.uid in resource.data.members)
+            && request.resource.data.members == resource.data.members.concat([request.auth.uid])
+            && request.resource.data.members.size() <= 6)
+          || (request.auth.uid in resource.data.members
+            && (request.resource.data.members == resource.data.members
+              || request.resource.data.members.toSet()
+                == resource.data.members.toSet().difference([request.auth.uid].toSet())))
+        );
+
+      allow delete: if false;
+
+      // Totales por mes de cada persona: los ven todos los miembros, solo los escribe su dueña.
+      match /summaries/{summaryId} {
+        allow read: if isMember(hid);
+        allow create, update: if isMember(hid)
+          && summaryId.matches(request.auth.uid + '_[0-9]{4}-[0-9]{2}')
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.total is int
+          && request.resource.data.byCategory is map;
+        allow delete: if isMember(hid) && summaryId.matches(request.auth.uid + '_[0-9]{4}-[0-9]{2}');
+      }
+
+      // Lista de compras compartida.
+      match /shopping/{itemId} {
+        allow read, delete: if isMember(hid);
+        allow create: if isMember(hid)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 80
+          && request.resource.data.done == false;
+        allow update: if isMember(hid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['done', 'doneBy', 'doneAt', 'text'])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 80;
+      }
+    }
+  }
+}
