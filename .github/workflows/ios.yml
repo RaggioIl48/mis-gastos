@@ -2,7 +2,9 @@ name: iOS
 
 on:
   push:
+    paths-ignore: ["web/**", "README.md", ".claude/**"]
   pull_request:
+    paths-ignore: ["web/**", "README.md", ".claude/**"]
   workflow_dispatch:
 
 concurrency:

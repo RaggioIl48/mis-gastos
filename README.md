@@ -1,8 +1,36 @@
 # Mis Gastos
 
-App nativa para iPhone (Swift + SwiftUI + SwiftData) para registrar gastos personales en pesos colombianos. Todo se guarda en el teléfono: sin Internet, cuentas ni servidores.
+App para registrar gastos personales en pesos colombianos. Todo se guarda en el teléfono: sin cuentas ni servidores.
 
-## Requisitos
+Hay dos versiones con las mismas funciones:
+
+- **Versión web** (carpeta [`web/`](web/)): se abre en Safari y se instala con *Añadir a pantalla de inicio*. Es la forma recomendada si no tienes Mac.
+- **App nativa para iPhone** (Swift + SwiftUI + SwiftData): necesita Xcode o Sideloadly para instalarse.
+
+## Versión web
+
+HTML, CSS y JavaScript sin dependencias ni paso de compilación.
+
+- Instalar en el iPhone: abre la dirección publicada en **Safari** → **Compartir** → **Añadir a pantalla de inicio**. Ábrela siempre desde ese icono: funciona sin Internet y el iPhone conserva sus datos.
+- Los datos viven en el almacenamiento de Safari para ese sitio. En **Ajustes → Exportar copia** guardas un archivo de respaldo que luego puedes **Importar**.
+- Probar en el PC (requiere Node.js):
+
+```bash
+cd web
+npm start
+```
+
+y abre http://localhost:5173. Pruebas de la lógica: `npm test`. Para regenerar los iconos: `npm run icons`.
+
+| Archivo | Contenido |
+| --- | --- |
+| `web/logic.js` | Lógica pura: miles → pesos, formato `$25.000`, totales, filtros, duplicados, categorías, CSV y copias |
+| `web/store.js` | Guardado local (localStorage) |
+| `web/app.js` | Interfaz: Inicio, Historial, Categorías, Ajustes y formularios |
+| `web/sw.js` | Funcionamiento sin conexión |
+| `web/tests/` | Pruebas con `node --test` |
+
+## App nativa: requisitos
 
 - Un Mac con **Xcode 16 o posterior** (el proyecto usa carpetas sincronizadas de Xcode 16).
 - iPhone con **iOS 17 o posterior**.
