@@ -3,9 +3,8 @@ import {
   addMonths, canDeleteCategory, CATEGORY_ICONS, cleanShoppingText, comparisonKey, createInitialData, dateKey,
   dayTitle, dayTotal, doneItems, firstDayOfMonth, formatCOP, groupByDay, householdIdFromSearch, householdMonth,
   initials, inviteLink, isFilterActive, isLikelyDuplicate, isValidDayKey, makeBackup, matchesFilter, monthKeyOf,
-  monthTitle, parseData, parseErrorMessage, parseThousands, pendingItems, pendingText, sameSummary,
-  shoppingPreview, shortDate, sortExpenses, summarizeByMonth, thousandsInput, toCSV, total, usageText,
-  validateCategoryName,
+  monthTitle, parseData, parseErrorMessage, parseThousands, pendingItems, pendingText, SCOPES, scopeLabel,
+  shoppingPreview, shortDate, sortExpenses, thousandsInput, toCSV, total, usageText, validateCategoryName,
 } from './logic.js';
 import { readPreference, requestPersistence, writePreference } from './store.js';
 
@@ -41,11 +40,13 @@ function emptyState() {
     user: null,
     profile: null,
     household: null,
+    // data.expenses son los gastos de esta persona: sus personales y los familiares que registró.
     data: { categories: [], expenses: [] },
-    summaries: [],
+    personal: [],
+    family: [], // gastos familiares de todo el hogar
     shopping: [],
-    loaded: { categories: false, expenses: false, summaries: false },
-    synced: { categories: false, expenses: false, summaries: false },
+    loaded: { categories: false, expenses: false },
+    synced: { categories: false, expenses: false },
     authError: '',
   };
 }
@@ -61,6 +62,15 @@ const state = {
 const uid = () => state.user?.uid;
 const myName = () => state.profile?.name ?? firstName(state.user?.displayName);
 const householdId = () => state.household?.id ?? null;
+const owner = () => ({ uid: uid(), name: myName(), householdId: householdId() });
+const myFamilyExpenses = () => state.data.expenses.filter((expense) => expense.scope === SCOPES.family);
+
+function mergeMyExpenses() {
+  state.data.expenses = [
+    ...state.personal.map((expense) => ({ ...expense, scope: SCOPES.personal })),
+    ...state.family.filter((expense) => expense.createdBy === uid()).map((expense) => ({ ...expense, scope: SCOPES.family })),
+  ];
+}
 
 function sortedCategories() {
   return [...state.data.categories].sort((a, b) => a.order - b.order);
@@ -99,13 +109,14 @@ function expenseRow(expense, { showDate }) {
   const subtitle = [expense.note ? categoryName : null, showDate ? shortDate(expense.date) : null]
     .filter(Boolean)
     .join(' · ');
+  const isFamily = expense.scope === SCOPES.family;
   return `
     <li>
       <button class="row-button" type="button" data-action="edit-expense" data-id="${escapeHTML(expense.id)}">
         <span class="row-icon" aria-hidden="true">${escapeHTML(category?.icon ?? '❔')}</span>
         <span class="row-texts">
           <span class="row-title">${escapeHTML(title)}</span>
-          ${subtitle ? `<span class="row-subtitle">${escapeHTML(subtitle)}</span>` : ''}
+          ${subtitle || isFamily ? `<span class="row-subtitle">${isFamily ? '<span class="tag">Familia</span>' : ''}${escapeHTML(subtitle)}</span>` : ''}
         </span>
         <span class="row-amount">${formatCOP(expense.amount)}</span>
       </button>
@@ -146,7 +157,7 @@ function signInView() {
     <section class="center-screen auth">
       <img class="auth-icon" src="icons/icon-192.png" alt="" width="88" height="88">
       <h1>Mis Gastos</h1>
-      <p>Registra tus gastos y compártelos con tu hogar. Cada persona ve solo sus propios gastos; en <strong>Familia</strong> se ven los totales.</p>
+      <p>Registra tus gastos y comparte con tu hogar solo los que marques como <strong>Familia</strong>. Tus gastos personales los ves únicamente tú.</p>
       ${invited ? '<p class="auth-note">Te invitaron a un hogar. Inicia sesión para unirte.</p>' : ''}
       <button class="primary-button google" type="button" data-action="sign-in">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" stroke="none" opacity=".8" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" stroke="none" opacity=".6" d="M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9z"/><path fill="currentColor" stroke="none" opacity=".9" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.5L6.4 10C7.2 7.8 9.4 6 12 6z"/></svg>
@@ -293,7 +304,8 @@ function familyView() {
   const household = state.household;
   if (!household) return `<header class="title-bar"><h1>Familia</h1></header>${loadingView()}`;
   const members = household.members.map((id) => ({ id, name: household.names?.[id] ?? 'Miembro' }));
-  const month = householdMonth(state.summaries, state.familyMonth, members.map(({ id, name }) => ({ uid: id, name })));
+  const nameOf = (id, fallback) => household.names?.[id] ?? fallback ?? 'Miembro';
+  const month = householdMonth(state.family, state.familyMonth, members.map(({ id, name }) => ({ uid: id, name })));
   const myIcons = new Map(state.data.categories.map((c) => [comparisonKey(c.name), c.icon]));
   const memberRows = month.byMember.map((member) => `
     <div class="summary-row member-total">
@@ -303,12 +315,30 @@ function familyView() {
 
   const rows = month.byCategory.map((entry) => `
     <li class="share-row">
-      <span class="row-icon" aria-hidden="true">${escapeHTML(myIcons.get(comparisonKey(entry.name)) ?? '🏷️')}</span>
+      <span class="row-icon" aria-hidden="true">${escapeHTML(myIcons.get(comparisonKey(entry.name)) ?? entry.icon ?? '🏷️')}</span>
       <span class="row-texts">
         <span class="share-line"><span class="row-title">${escapeHTML(entry.name)}</span><span class="row-amount">${formatCOP(entry.total)}</span></span>
         <span class="share-bar" aria-hidden="true"><span style="width:${Math.max(2, Math.round(entry.share * 100))}%"></span></span>
       </span>
     </li>`).join('');
+
+  // Detalle de los gastos familiares: lo ve todo el hogar; solo quien lo registró lo puede editar.
+  const detail = month.items.map((expense) => {
+    const mine = expense.createdBy === uid();
+    const who = mine ? 'Tú' : nameOf(expense.createdBy, expense.createdByName);
+    const title = expense.note || expense.categoryName || 'Sin categoría';
+    const subtitle = [who, expense.note ? expense.categoryName : null, shortDate(expense.date)].filter(Boolean).join(' · ');
+    const inner = `
+        <span class="row-icon" aria-hidden="true">${escapeHTML(expense.categoryIcon ?? '🏷️')}</span>
+        <span class="row-texts">
+          <span class="row-title">${escapeHTML(title)}</span>
+          <span class="row-subtitle">${escapeHTML(subtitle)}</span>
+        </span>
+        <span class="row-amount">${formatCOP(expense.amount)}</span>`;
+    return mine
+      ? `<li><button class="row-button" type="button" data-action="edit-expense" data-id="${escapeHTML(expense.id)}">${inner}</button></li>`
+      : `<li><div class="row-button static">${inner}</div></li>`;
+  }).join('');
 
   return `
     <header class="title-bar"><h1>Familia</h1></header>
@@ -319,14 +349,18 @@ function familyView() {
       ${memberRows}
       <div class="summary-row"><span>Movimientos</span><strong>${month.count}</strong></div>
     </section>
-    <h2 class="section-title">Por categoría</h2>
-    ${rows ? `<ul class="list">${rows}</ul>` : emptyBox('Sin gastos', 'Nadie del hogar ha registrado gastos en este mes.')}
+    ${rows ? `
+      <h2 class="section-title">Por categoría</h2>
+      <ul class="list">${rows}</ul>
+      <h2 class="section-title">Gastos familiares</h2>
+      <ul class="list">${detail}</ul>`
+      : `<div class="group">${emptyBox('Sin gastos familiares', 'Al guardar un gasto, elige «Familia» para que aparezca aquí.')}</div>`}
     <h2 class="section-title">Hogar</h2>
     <div class="card members">
       <div class="avatars">${members.map((m) => `<span class="avatar" title="${escapeHTML(m.name)}">${escapeHTML(initials(m.name))}</span><span class="avatar-name">${escapeHTML(m.id === uid() ? `${m.name} (tú)` : m.name)}</span>`).join('')}</div>
       <button class="primary-button" type="button" data-action="invite">${ICONS.share}<span>Invitar a alguien</span></button>
     </div>
-    <p class="section-note">Aquí se ven los totales del hogar y de cada persona. El detalle de cada gasto lo ve únicamente quien lo registró.</p>`;
+    <p class="section-note">Aquí solo aparecen los gastos marcados como «Familia». Los gastos personales los ve únicamente quien los registró.</p>`;
 }
 
 function categoriesView() {
@@ -391,7 +425,7 @@ function settingsView() {
       <li><button class="row-button" type="button" data-action="export-all-csv" ${count ? '' : 'disabled'}><span class="row-texts"><span class="row-title">Exportar todo a CSV</span><span class="row-subtitle">Para abrir en Excel o Numbers</span></span>${ICONS.chevron}</button></li>
     </ul>
     <input id="backup-file" class="visually-hidden" type="file" accept=".json,application/json" tabindex="-1" aria-hidden="true">
-    <p class="section-note">Tus gastos se guardan en tu cuenta y solo tú puedes verlos. Con el hogar se comparten los totales por categoría y la lista de compras.</p>
+    <p class="section-note">Tus gastos personales solo los ves tú. Con tu hogar se comparten únicamente los gastos que marques como «Familia» y la lista de compras.</p>
 
     <ul class="list group">
       <li><button class="row-button danger" type="button" data-action="sign-out"><span class="row-texts"><span class="row-title">Cerrar sesión</span></span></button></li>
@@ -531,6 +565,12 @@ function openExpenseForm(expense = null) {
   let selectedCategory = expense
     ? expense.categoryId
     : (categories.find((c) => c.id === lastCategory) ?? categories[0]).id;
+  const canShare = Boolean(householdId());
+  let selectedScope = expense?.scope
+    ?? (canShare && readPreference('ultimoTipo') === SCOPES.family ? SCOPES.family : SCOPES.personal);
+  const scopeHint = (scope) => (scope === SCOPES.family
+    ? 'Lo verá todo tu hogar en la pestaña Familia.'
+    : 'Solo tú lo ves. No aparece en Familia.');
 
   const chips = categories.map((category) => `
     <button type="button" class="chip" role="radio" data-category="${escapeHTML(category.id)}" aria-checked="${category.id === selectedCategory}">
@@ -556,6 +596,14 @@ function openExpenseForm(expense = null) {
           </div>
           <p id="amount-preview" class="preview" aria-live="polite"></p>
           <p id="amount-hint" class="hint">Escribe el valor en miles: 25 = $25.000 · 1250 = $1.250.000</p>
+        </div>
+        <div class="group">
+          <span class="group-label" id="scope-label">Tipo de gasto</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="scope-label" aria-describedby="scope-hint">
+            <button type="button" role="radio" data-scope="${SCOPES.personal}" aria-checked="${selectedScope === SCOPES.personal}">🔒 Personal</button>
+            <button type="button" role="radio" data-scope="${SCOPES.family}" aria-checked="${selectedScope === SCOPES.family}" ${canShare ? '' : 'disabled'}>🏠 Familia</button>
+          </div>
+          <p id="scope-hint" class="hint">${scopeHint(selectedScope)}</p>
         </div>
         <div class="group">
           <span class="group-label" id="category-label">Categoría</span>
@@ -596,6 +644,15 @@ function openExpenseForm(expense = null) {
   };
 
   amountInput.addEventListener('input', update);
+  $('.segmented', sheet).addEventListener('click', (event) => {
+    const option = event.target.closest('[data-scope]');
+    if (!option || option.disabled) return;
+    selectedScope = option.dataset.scope;
+    sheet.querySelectorAll('[data-scope]').forEach((el) => {
+      el.setAttribute('aria-checked', String(el.dataset.scope === selectedScope));
+    });
+    $('#scope-hint', sheet).textContent = scopeHint(selectedScope);
+  });
   $('.chips', sheet).addEventListener('click', (event) => {
     const chip = event.target.closest('[data-category]');
     if (!chip) return;
@@ -619,7 +676,9 @@ function openExpenseForm(expense = null) {
 
     saving = true;
     update();
-    const fields = { amount: result.pesos, categoryId: selectedCategory, date, note };
+    const scope = selectedScope === SCOPES.family && householdId() ? SCOPES.family : SCOPES.personal;
+    const fields = { amount: result.pesos, categoryId: selectedCategory, date, note, scope };
+    const category = categoryById(selectedCategory);
 
     if (isNew) {
       const candidate = { ...fields, createdAt: Date.now() };
@@ -631,14 +690,15 @@ function openExpenseForm(expense = null) {
         });
         if (!proceed) { saving = false; update(); return; }
       }
-      persist(cloud.saveExpense(uid(), { id: cloud.newId('users', uid(), 'expenses'), ...candidate }));
+      persist(cloud.saveExpense(owner(), { id: cloud.newExpenseId(uid()), ...candidate }, category));
       writePreference('ultimaCategoria', selectedCategory);
+      writePreference('ultimoTipo', scope);
       closeSheet();
-      toast(`Gasto de ${formatCOP(result.pesos)} guardado`);
+      toast(`Gasto ${scope === SCOPES.family ? 'familiar' : 'personal'} de ${formatCOP(result.pesos)} guardado`);
     } else {
-      persist(cloud.saveExpense(uid(), { ...expense, ...fields }));
+      persist(cloud.saveExpense(owner(), { ...expense, ...fields }, category, expense.scope));
       closeSheet();
-      toast('Cambios guardados');
+      toast(scope === expense.scope ? 'Cambios guardados' : `Ahora es un gasto ${scope === SCOPES.family ? 'familiar' : 'personal'}`);
     }
   });
 
@@ -650,7 +710,7 @@ function openExpenseForm(expense = null) {
       destructive: true,
     });
     if (proceed) {
-      persist(cloud.deleteExpense(uid(), expense.id));
+      persist(cloud.deleteExpense(owner(), expense));
       closeSheet();
       toast('Gasto eliminado');
     }
@@ -776,6 +836,8 @@ function openCategoryEditor(category = null) {
     const name = nameInput.value.trim();
     if (category) {
       persist(cloud.saveCategory(uid(), { ...category, name, icon }));
+      const affected = myFamilyExpenses().filter((expense) => expense.categoryId === category.id);
+      if (affected.length && householdId()) persist(cloud.refreshFamilyCategory(owner(), affected, { name, icon }));
     } else {
       const order = Math.max(-1, ...state.data.categories.map((c) => c.order)) + 1;
       persist(cloud.saveCategory(uid(), { id: cloud.newId('users', uid(), 'categories'), name, icon, order }));
@@ -859,6 +921,7 @@ function exportCSV(expenses) {
     date: expense.date,
     category: categoryById(expense.categoryId)?.name ?? 'Sin categoría',
     note: expense.note,
+    scope: expense.scope,
     amount: expense.amount,
   }));
   // La marca BOM hace que Excel lea bien las tildes.
@@ -887,7 +950,9 @@ async function importBackup(file) {
   if (!proceed) return;
   toast('Importando…');
   try {
-    await cloud.replaceAllData(uid(), state.data, data);
+    // Sin hogar no hay dónde guardar los familiares: entran como personales.
+    const next = householdId() ? data : { ...data, expenses: data.expenses.map((e) => ({ ...e, scope: SCOPES.personal })) };
+    await cloud.replaceAllData(owner(), state.data, next);
     toast('Copia importada');
   } catch (error) {
     console.error(error);
@@ -942,12 +1007,12 @@ async function settleHousehold() {
         const proceed = await confirmDialog({
           title: `¿Unirte al hogar de ${names}?`,
           message: alone
-            ? 'Verán los totales por categoría que compartas. Tus gastos detallados siguen siendo solo tuyos.'
-            : 'Saldrás de tu hogar actual. Tus gastos detallados siguen siendo solo tuyos.',
+            ? 'Verán los gastos que marques como Familia. Tus gastos personales siguen siendo solo tuyos.'
+            : 'Saldrás de tu hogar actual y tus gastos familiares pasarán a ser personales.',
           confirmLabel: 'Unirme',
         });
         if (proceed) {
-          if (current) await cloud.leaveHousehold(uid(), current, mySummaryMonths());
+          if (current) await cloud.leaveHousehold({ ...owner(), householdId: current }, myFamilyExpenses());
           await cloud.joinHousehold(uid(), myName(), invite);
           toast('Te uniste al hogar');
           return;
@@ -963,20 +1028,16 @@ async function settleHousehold() {
   }
 }
 
-function mySummaryMonths() {
-  return state.summaries.filter((summary) => summary.uid === uid()).map((summary) => summary.month);
-}
-
 async function leaveHousehold() {
   const proceed = await confirmDialog({
     title: '¿Salir del hogar?',
-    message: 'Dejarán de ver tus totales y tú dejarás de ver los suyos y la lista compartida. Tus gastos no se borran.',
+    message: 'Tus gastos familiares pasarán a ser personales y dejarás de ver los del hogar y la lista compartida. Tus gastos no se borran.',
     confirmLabel: 'Salir',
     destructive: true,
   });
   if (!proceed) return;
   try {
-    await cloud.leaveHousehold(uid(), householdId(), mySummaryMonths());
+    await cloud.leaveHousehold(owner(), myFamilyExpenses());
     toast('Saliste del hogar');
   } catch (error) {
     console.error(error);
@@ -985,32 +1046,6 @@ async function leaveHousehold() {
 }
 
 // ---------- Sincronización ----------
-
-let summaryTimer = null;
-
-/** Publica en el hogar solo los totales por mes y categoría de esta persona. */
-function scheduleSummarySync() {
-  clearTimeout(summaryTimer);
-  summaryTimer = setTimeout(syncSummaries, 400);
-}
-
-function syncSummaries() {
-  const hid = householdId();
-  const ready = hid && state.synced.expenses && state.synced.categories && state.synced.summaries
-    && state.household.members.includes(uid());
-  if (!ready) return;
-  const mine = summarizeByMonth(state.data.expenses, state.data.categories);
-  const published = new Map(state.summaries.filter((s) => s.uid === uid()).map((s) => [s.month, s]));
-  for (const [month, summary] of Object.entries(mine)) {
-    const existing = published.get(month);
-    if (!sameSummary(summary, existing) || existing.name !== myName()) {
-      persist(cloud.saveSummary(hid, uid(), myName(), month, summary));
-    }
-  }
-  for (const month of published.keys()) {
-    if (!mine[month]) persist(cloud.deleteSummary(hid, uid(), month));
-  }
-}
 
 let seeding = false;
 
@@ -1045,8 +1080,8 @@ function onWatchError(error) {
 }
 
 function dataChanged() {
+  mergeMyExpenses();
   if (state.phase === 'app') render();
-  scheduleSummarySync();
 }
 
 function watchHousehold(hid) {
@@ -1054,22 +1089,19 @@ function watchHousehold(hid) {
   stop(householdWatchers);
   watchedHousehold = hid;
   state.household = null;
-  state.summaries = [];
+  state.family = [];
   state.shopping = [];
-  state.loaded.summaries = false;
-  state.synced.summaries = false;
+  mergeMyExpenses();
   if (!hid) return;
 
-  // La lista y los totales solo se piden cuando el servidor confirma que esta persona
+  // La lista y los gastos familiares solo se piden cuando el servidor confirma que esta persona
   // es miembro del hogar; antes, las reglas los rechazarían y la escucha se cerraría.
   let sharedStarted = false;
   const startShared = () => {
     sharedStarted = true;
     householdWatchers.push(
-      cloud.watchCollection(['households', hid, 'summaries'], (items, meta) => {
-        state.summaries = items;
-        state.loaded.summaries = true;
-        if (!meta.fromCache) state.synced.summaries = true;
+      cloud.watchCollection(['households', hid, 'expenses'], (items) => {
+        state.family = items;
         dataChanged();
       }, onWatchError),
       cloud.watchCollection(['households', hid, 'shopping'], (items) => {
@@ -1131,7 +1163,7 @@ function handleUser(user) {
       dataChanged();
     }, onWatchError),
     cloud.watchCollection(['users', id, 'expenses'], (items, meta) => {
-      state.data.expenses = items;
+      state.personal = items;
       state.loaded.expenses = true;
       if (!meta.fromCache) state.synced.expenses = true;
       dataChanged();

@@ -22,7 +22,7 @@ beforeEach(async () => {
     const db = ctx.firestore();
     await setDoc(doc(db, 'households', HID), { members: ['ana', 'bea'], names: { ana: 'Ana', bea: 'Bea' }, createdBy: 'ana', createdAt: 1 });
     await setDoc(doc(db, 'users/ana/expenses/e1'), { amount: 25000, note: 'Almuerzo', date: '2026-10-22', categoryId: 'c1', createdAt: 1 });
-    await setDoc(doc(db, `households/${HID}/summaries/ana_2026-10`), { uid: 'ana', name: 'Ana', month: '2026-10', total: 25000, byCategory: { Alimentación: 25000 } });
+    await setDoc(doc(db, `households/${HID}/expenses/f1`), { createdBy: 'ana', createdByName: 'Ana', amount: 50000, note: 'Mercado', date: '2026-10-22', categoryName: 'Alimentación', createdAt: 1 });
     await setDoc(doc(db, `households/${HID}/shopping/s1`), { text: 'Leche', done: false, createdBy: 'ana', createdAt: 1 });
   });
 });
@@ -50,21 +50,39 @@ describe('gastos personales', () => {
   });
 });
 
-describe('resúmenes del hogar', () => {
-  test('los miembros ven los totales de todas', async () => {
-    await assertSucceeds(getDocs(collection(as('bea'), `households/${HID}/summaries`)));
+describe('gastos familiares', () => {
+  const family = (createdBy, extra = {}) => ({
+    createdBy, createdByName: createdBy, amount: 20000, note: '', date: '2026-10-23', categoryName: 'Hogar', createdAt: 2, ...extra,
+  });
+  const path = (id) => `households/${HID}/expenses/${id}`;
+
+  test('los miembros ven el detalle de los gastos familiares de todas', async () => {
+    await assertSucceeds(getDocs(collection(as('bea'), `households/${HID}/expenses`)));
+    await assertSucceeds(getDoc(doc(as('bea'), path('f1'))));
   });
 
-  test('alguien de fuera no ve los totales', async () => {
-    await assertFails(getDocs(collection(as('intrusa'), `households/${HID}/summaries`)));
+  test('alguien de fuera no los ve ni los crea', async () => {
+    await assertFails(getDocs(collection(as('intrusa'), `households/${HID}/expenses`)));
+    await assertFails(setDoc(doc(as('intrusa'), path('x')), family('intrusa')));
   });
 
-  test('cada una solo escribe su propio resumen', async () => {
-    const data = { uid: 'bea', name: 'Bea', month: '2026-10', total: 5000, byCategory: { Salud: 5000 } };
-    await assertSucceeds(setDoc(doc(as('bea'), `households/${HID}/summaries/bea_2026-10`), data));
-    await assertFails(setDoc(doc(as('bea'), `households/${HID}/summaries/ana_2026-10`), { ...data, uid: 'ana' }));
-    await assertFails(setDoc(doc(as('bea'), `households/${HID}/summaries/bea_2026-10`), { ...data, uid: 'ana' }));
-    await assertFails(deleteDoc(doc(as('bea'), `households/${HID}/summaries/ana_2026-10`)));
+  test('cada una registra los suyos y solo puede cambiar o borrar los suyos', async () => {
+    await assertSucceeds(setDoc(doc(as('bea'), path('b1')), family('bea')));
+    await assertFails(setDoc(doc(as('bea'), path('b2')), family('ana')));
+    await assertFails(updateDoc(doc(as('bea'), path('f1')), { amount: 1 }));
+    await assertFails(deleteDoc(doc(as('bea'), path('f1'))));
+    await assertSucceeds(updateDoc(doc(as('ana'), path('f1')), { amount: 60000 }));
+    await assertSucceeds(deleteDoc(doc(as('ana'), path('f1'))));
+  });
+
+  test('valida los datos del gasto', async () => {
+    await assertFails(setDoc(doc(as('bea'), path('b3')), family('bea', { amount: 2.5 })));
+    await assertFails(setDoc(doc(as('bea'), path('b4')), family('bea', { amount: -1 })));
+    await assertFails(setDoc(doc(as('bea'), path('b5')), family('bea', { date: '23/10/2026' })));
+  });
+
+  test('los resúmenes de la versión anterior ya no son accesibles', async () => {
+    await assertFails(getDocs(collection(as('bea'), `households/${HID}/summaries`)));
   });
 });
 

@@ -111,13 +111,17 @@ export async function readHousehold(householdId) {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 }
 
-/** Sale del hogar y borra antes sus propios totales, para que el hogar deje de verlos. */
-export async function leaveHousehold(uid, householdId, months) {
-  const batch = writeBatch(db);
-  for (const month of months) batch.delete(doc(db, 'households', householdId, 'summaries', `${uid}_${month}`));
-  await batch.commit();
-  await updateDoc(doc(db, 'households', householdId), { members: arrayRemove(uid), [`names.${uid}`]: deleteField() });
-  await setDoc(doc(db, 'users', uid), { householdId: null }, { merge: true });
+/**
+ * Sale del hogar. Antes pasa sus gastos familiares a personales, para que el
+ * hogar deje de verlos y ella no los pierda.
+ */
+export async function leaveHousehold(owner, myFamilyExpenses) {
+  await commitInChunks(myFamilyExpenses.flatMap((expense) => [
+    (batch) => batch.set(expenseRef(owner, 'personal', expense.id), expenseData(owner, { ...expense, scope: 'personal' })),
+    (batch) => batch.delete(expenseRef(owner, 'family', expense.id)),
+  ]));
+  await updateDoc(doc(db, 'households', owner.householdId), { members: arrayRemove(owner.uid), [`names.${owner.uid}`]: deleteField() });
+  await setDoc(doc(db, 'users', owner.uid), { householdId: null }, { merge: true });
 }
 
 export async function joinHousehold(uid, name, householdId) {
@@ -132,18 +136,56 @@ export async function joinHousehold(uid, name, householdId) {
 export const renameInHousehold = (uid, householdId, name) =>
   updateDoc(doc(db, 'households', householdId), { [`names.${uid}`]: name });
 
-// ---------- Gastos y categorías (privados) ----------
+// ---------- Gastos y categorías ----------
+// owner = { uid, name, householdId }. Los gastos personales viven en la cuenta de
+// su dueña; los familiares, en el hogar, con el nombre e icono de su categoría
+// para que el resto del hogar los pueda mostrar.
 
 function stripId({ id, ...data }) {
   return [id, data];
 }
 
-export function saveExpense(uid, expense) {
-  const [id, data] = stripId(expense);
-  return setDoc(doc(db, 'users', uid, 'expenses', id), data);
+function expenseRef(owner, scope, id) {
+  return scope === 'family'
+    ? doc(db, 'households', owner.householdId, 'expenses', id)
+    : doc(db, 'users', owner.uid, 'expenses', id);
 }
 
-export const deleteExpense = (uid, id) => deleteDoc(doc(db, 'users', uid, 'expenses', id));
+function expenseData(owner, expense, category = null) {
+  const data = {
+    amount: expense.amount,
+    note: expense.note ?? '',
+    date: expense.date,
+    categoryId: expense.categoryId ?? null,
+    createdAt: expense.createdAt,
+  };
+  if (expense.scope !== 'family') return data;
+  return {
+    ...data,
+    createdBy: owner.uid,
+    createdByName: owner.name,
+    categoryName: category?.name ?? expense.categoryName ?? 'Sin categoría',
+    categoryIcon: category?.icon ?? expense.categoryIcon ?? '🏷️',
+  };
+}
+
+export const newExpenseId = (uid) => doc(collection(db, 'users', uid, 'expenses')).id;
+
+/** Guarda un gasto; si cambió de Personal a Familia (o al revés), lo mueve. */
+export function saveExpense(owner, expense, category, previousScope = expense.scope) {
+  const batch = writeBatch(db);
+  if (previousScope !== expense.scope) batch.delete(expenseRef(owner, previousScope, expense.id));
+  batch.set(expenseRef(owner, expense.scope, expense.id), expenseData(owner, expense, category));
+  return batch.commit();
+}
+
+export const deleteExpense = (owner, expense) => deleteDoc(expenseRef(owner, expense.scope, expense.id));
+
+/** Actualiza nombre e icono de una categoría en los gastos familiares que la usan. */
+export function refreshFamilyCategory(owner, familyExpenses, category) {
+  return commitInChunks(familyExpenses.map((expense) => (batch) =>
+    batch.update(expenseRef(owner, 'family', expense.id), { categoryName: category.name, categoryIcon: category.icon })));
+}
 
 export function saveCategory(uid, category) {
   const [id, data] = stripId(category);
@@ -171,26 +213,19 @@ export function seedCategories(uid, categories) {
 }
 
 /** Reemplaza todos los gastos y categorías por los de una copia de seguridad. */
-export function replaceAllData(uid, current, next) {
+export function replaceAllData(owner, current, next) {
+  const categories = new Map(next.categories.map((category) => [category.id, category]));
   return commitInChunks([
-    ...current.expenses.map((item) => (batch) => batch.delete(doc(db, 'users', uid, 'expenses', item.id))),
-    ...current.categories.map((item) => (batch) => batch.delete(doc(db, 'users', uid, 'categories', item.id))),
-    ...next.categories.map((item) => (batch) => { const [id, data] = stripId(item); batch.set(doc(db, 'users', uid, 'categories', id), data); }),
-    ...next.expenses.map((item) => (batch) => { const [id, data] = stripId(item); batch.set(doc(db, 'users', uid, 'expenses', id), data); }),
-    (batch) => batch.set(doc(db, 'users', uid), { seeded: true }, { merge: true }),
+    ...current.expenses.map((item) => (batch) => batch.delete(expenseRef(owner, item.scope, item.id))),
+    ...current.categories.map((item) => (batch) => batch.delete(doc(db, 'users', owner.uid, 'categories', item.id))),
+    ...next.categories.map((item) => (batch) => { const [id, data] = stripId(item); batch.set(doc(db, 'users', owner.uid, 'categories', id), data); }),
+    ...next.expenses.map((item) => (batch) =>
+      batch.set(expenseRef(owner, item.scope, item.id), expenseData(owner, item, categories.get(item.categoryId)))),
+    (batch) => batch.set(doc(db, 'users', owner.uid), { seeded: true }, { merge: true }),
   ]);
 }
 
-// ---------- Hogar: totales y lista de compras ----------
-
-export function saveSummary(householdId, uid, name, month, summary) {
-  return setDoc(doc(db, 'households', householdId, 'summaries', `${uid}_${month}`), {
-    uid, name, month, total: summary.total, count: summary.count, byCategory: summary.byCategory, updatedAt: Date.now(),
-  });
-}
-
-export const deleteSummary = (householdId, uid, month) =>
-  deleteDoc(doc(db, 'households', householdId, 'summaries', `${uid}_${month}`));
+// ---------- Lista de compras ----------
 
 export function addShoppingItem(householdId, uid, name, text) {
   return setDoc(doc(collection(db, 'households', householdId, 'shopping')), {

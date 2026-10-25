@@ -2,62 +2,50 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   cleanShoppingText, doneItems, householdIdFromSearch, householdMonth, initials, inviteLink,
-  isValidHouseholdId, pendingItems, pendingText, sameSummary, shoppingPreview, summarizeByMonth,
+  isValidHouseholdId, pendingItems, pendingText, scopeLabel, shoppingPreview,
 } from '../logic.js';
 
-describe('resúmenes que se comparten con el hogar', () => {
-  const categories = [{ id: 'c1', name: 'Alimentación' }, { id: 'c2', name: 'Salud' }];
-  const expenses = [
-    { amount: 25_000, date: '2026-10-22', categoryId: 'c1' },
-    { amount: 5_000, date: '2026-10-02', categoryId: 'c1' },
-    { amount: 80_000, date: '2026-10-10', categoryId: 'c2' },
-    { amount: 12_000, date: '2026-09-30', categoryId: 'borrada' },
+describe('consolidado del hogar (solo gastos familiares)', () => {
+  const family = [
+    { id: 'a1', createdBy: 'ana', createdByName: 'Ana', amount: 30_000, date: '2026-10-22', categoryName: 'Alimentación', categoryIcon: '🍽️', createdAt: 3 },
+    { id: 'a2', createdBy: 'ana', createdByName: 'Ana', amount: 80_000, date: '2026-10-10', categoryName: 'Salud', createdAt: 1 },
+    { id: 'b1', createdBy: 'bea', createdByName: 'Bea', amount: 20_000, date: '2026-10-22', categoryName: 'alimentacion', createdAt: 4 },
+    { id: 'b2', createdBy: 'bea', createdByName: 'Bea', amount: 30_000, date: '2026-10-05', categoryName: 'Transporte', createdAt: 2 },
+    { id: 'b3', createdBy: 'bea', createdByName: 'Bea', amount: 999, date: '2026-09-30', categoryName: 'Otros', createdAt: 0 },
   ];
 
-  test('suma por mes y por nombre de categoría, sin incluir el detalle de los gastos', () => {
-    assert.deepEqual(summarizeByMonth(expenses, categories), {
-      '2026-10': { total: 110_000, count: 3, byCategory: { Alimentación: 30_000, Salud: 80_000 } },
-      '2026-09': { total: 12_000, count: 1, byCategory: { 'Sin categoría': 12_000 } },
-    });
-  });
-
-  test('detecta si un resumen cambió', () => {
-    const a = { total: 10, count: 1, byCategory: { A: 5, B: 5 } };
-    assert.ok(sameSummary(a, { total: 10, count: 1, byCategory: { B: 5, A: 5 } }));
-    assert.ok(!sameSummary(a, { total: 10, count: 1, byCategory: { A: 10 } }));
-    assert.ok(!sameSummary(a, { ...a, count: 2 }));
-    assert.ok(!sameSummary(a, undefined));
-  });
-});
-
-describe('totales del hogar', () => {
-  const summaries = [
-    { uid: 'ana', month: '2026-10', total: 110_000, count: 3, byCategory: { Alimentación: 30_000, Salud: 80_000 } },
-    { uid: 'bea', month: '2026-10', total: 50_000, count: 2, byCategory: { alimentacion: 20_000, Transporte: 30_000 } },
-    { uid: 'bea', month: '2026-09', total: 999, count: 1, byCategory: { Otros: 999 } },
-  ];
-
-  test('junta los totales de todas y las categorías equivalentes', () => {
-    const month = householdMonth(summaries, '2026-10');
+  test('suma el mes y junta las categorías equivalentes de cada persona', () => {
+    const month = householdMonth(family, '2026-10');
     assert.equal(month.total, 160_000);
-    assert.equal(month.count, 5);
+    assert.equal(month.count, 4);
     assert.deepEqual(month.byCategory.map(({ name, total }) => [name, total]), [
       ['Salud', 80_000], ['Alimentación', 50_000], ['Transporte', 30_000],
     ]);
     assert.equal(month.byCategory[0].share, 0.5);
+    assert.equal(month.byCategory[1].icon, '🍽️');
+  });
+
+  test('lista el detalle de los gastos familiares del mes, del más reciente al más antiguo', () => {
+    assert.deepEqual(householdMonth(family, '2026-10').items.map((e) => e.id), ['b1', 'a1', 'a2', 'b2']);
   });
 
   test('total de cada persona, en el orden del hogar y con el nombre actual', () => {
     const members = [{ uid: 'bea', name: 'Bea' }, { uid: 'ana', name: 'Ana María' }, { uid: 'cata', name: 'Cata' }];
-    assert.deepEqual(householdMonth(summaries, '2026-10', members).byMember, [
+    assert.deepEqual(householdMonth(family, '2026-10', members).byMember, [
       { uid: 'bea', name: 'Bea', total: 50_000 },
       { uid: 'ana', name: 'Ana María', total: 110_000 },
       { uid: 'cata', name: 'Cata', total: 0 },
     ]);
   });
 
-  test('un mes sin datos da cero', () => {
-    assert.deepEqual(householdMonth(summaries, '2026-01'), { total: 0, count: 0, byMember: [], byCategory: [] });
+  test('un mes sin gastos familiares da cero', () => {
+    assert.deepEqual(householdMonth(family, '2026-01'), { total: 0, count: 0, byMember: [], byCategory: [], items: [] });
+  });
+
+  test('tipo de gasto', () => {
+    assert.equal(scopeLabel('family'), 'Familia');
+    assert.equal(scopeLabel('personal'), 'Personal');
+    assert.equal(scopeLabel(undefined), 'Personal');
   });
 
   test('iniciales', () => {

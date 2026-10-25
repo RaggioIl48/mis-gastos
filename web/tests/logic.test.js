@@ -199,8 +199,8 @@ describe('categorías', () => {
 
 describe('CSV', () => {
   test('exporta pesos completos y con formato', () => {
-    const csv = toCSV([{ date: '2026-10-22', category: 'Alimentación', note: 'Almuerzo', amount: 25_000 }]);
-    assert.equal(csv, 'Fecha;Categoría;Descripción;Valor (COP);Valor\r\n2026-10-22;Alimentación;Almuerzo;25000;$25.000\r\n');
+    const csv = toCSV([{ date: '2026-10-22', category: 'Alimentación', note: 'Almuerzo', scope: 'family', amount: 25_000 }]);
+    assert.equal(csv, 'Fecha;Categoría;Descripción;Tipo;Valor (COP);Valor\r\n2026-10-22;Alimentación;Almuerzo;Familia;25000;$25.000\r\n');
   });
 
   test('escapa caracteres especiales', () => {
@@ -214,8 +214,13 @@ describe('CSV', () => {
 describe('copias de seguridad', () => {
   const data = {
     categories: [{ id: 'c1', name: 'Salud', icon: '🩺', order: 0 }],
-    expenses: [{ id: 'e1', amount: 25_000, note: 'Cita', date: '2026-10-22', categoryId: 'c1', createdAt: 1 }],
+    expenses: [{ id: 'e1', amount: 25_000, note: 'Cita', date: '2026-10-22', categoryId: 'c1', createdAt: 1, scope: 'personal' }],
   };
+
+  test('las copias antiguas, sin tipo de gasto, se importan como gastos familiares', () => {
+    const { scope, ...old } = data.expenses[0];
+    assert.equal(parseData({ ...data, expenses: [old] }).expenses[0].scope, 'family');
+  });
 
   test('una copia exportada se puede volver a importar igual', () => {
     const backup = JSON.parse(JSON.stringify(makeBackup(data, new Date(0))));

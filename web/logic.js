@@ -229,7 +229,7 @@ export function usageText(count) {
 
 // ---------- CSV ----------
 
-export const CSV_HEADER = ['Fecha', 'Categoría', 'Descripción', 'Valor (COP)', 'Valor'];
+export const CSV_HEADER = ['Fecha', 'Categoría', 'Descripción', 'Tipo', 'Valor (COP)', 'Valor'];
 
 export function csvEscape(field) {
   const text = String(field);
@@ -240,70 +240,51 @@ export function csvEscape(field) {
 export function toCSV(rows) {
   const lines = [CSV_HEADER.join(';')];
   for (const row of rows) {
-    lines.push([row.date, row.category, row.note, String(row.amount), formatCOP(row.amount)]
+    lines.push([row.date, row.category, row.note, scopeLabel(row.scope), String(row.amount), formatCOP(row.amount)]
       .map(csvEscape)
       .join(';'));
   }
   return `${lines.join('\r\n')}\r\n`;
 }
 
-// ---------- Resúmenes para el hogar ----------
+// ---------- Gastos familiares ----------
 
-/**
- * Totales por mes de una persona, por nombre de categoría. Es lo único que se
- * comparte con el hogar: { "2026-10": { total, count, byCategory: { Salud: 5000 } } }.
- */
-export function summarizeByMonth(expenses, categories) {
-  const names = new Map(categories.map((category) => [category.id, category.name]));
-  const months = {};
-  for (const expense of expenses) {
-    const month = monthKeyOf(expense.date);
-    const summary = months[month] ??= { total: 0, count: 0, byCategory: {} };
-    const name = names.get(expense.categoryId) ?? 'Sin categoría';
-    summary.total += expense.amount;
-    summary.count += 1;
-    summary.byCategory[name] = (summary.byCategory[name] ?? 0) + expense.amount;
-  }
-  return months;
-}
+export const SCOPES = { personal: 'personal', family: 'family' };
 
-/** Compara dos resúmenes sin importar el orden de las categorías. */
-export function sameSummary(a, b) {
-  if (!a || !b || a.total !== b.total || a.count !== b.count) return false;
-  const keysA = Object.keys(a.byCategory ?? {});
-  const keysB = Object.keys(b.byCategory ?? {});
-  return keysA.length === keysB.length && keysA.every((key) => a.byCategory[key] === b.byCategory?.[key]);
+export function scopeLabel(scope) {
+  return scope === SCOPES.family ? 'Familia' : 'Personal';
 }
 
 /**
- * Totales del hogar para un mes a partir de los resúmenes de cada persona.
- * Las categorías se juntan sin importar mayúsculas ni tildes.
+ * Consolidado del hogar para un mes. Solo recibe gastos familiares: los personales
+ * nunca salen del dispositivo de su dueña. Las categorías se juntan sin importar
+ * mayúsculas ni tildes, porque cada persona tiene las suyas.
  */
-export function householdMonth(summaries, monthKey, members = []) {
-  const ofMonth = summaries.filter((summary) => summary.month === monthKey);
+export function householdMonth(familyExpenses, monthKey, members = []) {
+  const items = familyExpenses.filter((expense) => monthKeyOf(expense.date) === monthKey);
   const memberTotals = new Map(members.map((member) => [member.uid, { ...member, total: 0 }]));
-  for (const summary of ofMonth) {
-    const entry = memberTotals.get(summary.uid) ?? { uid: summary.uid, name: summary.name ?? 'Miembro', total: 0 };
-    entry.total += summary.total ?? 0;
-    memberTotals.set(summary.uid, entry);
-  }
   const categories = new Map();
-  for (const summary of ofMonth) {
-    for (const [name, amount] of Object.entries(summary.byCategory ?? {})) {
-      const key = comparisonKey(name);
-      const entry = categories.get(key) ?? { name, total: 0 };
-      entry.total += amount;
-      categories.set(key, entry);
-    }
+  for (const expense of items) {
+    const member = memberTotals.get(expense.createdBy)
+      ?? { uid: expense.createdBy, name: expense.createdByName ?? 'Miembro', total: 0 };
+    member.total += expense.amount;
+    memberTotals.set(expense.createdBy, member);
+
+    const name = expense.categoryName || 'Sin categoría';
+    const key = comparisonKey(name);
+    const category = categories.get(key) ?? { name, icon: expense.categoryIcon ?? null, total: 0 };
+    category.total += expense.amount;
+    categories.set(key, category);
   }
-  const total = ofMonth.reduce((sum, summary) => sum + (summary.total ?? 0), 0);
+  const sum = total(items);
   return {
-    total,
-    count: ofMonth.reduce((sum, summary) => sum + (summary.count ?? 0), 0),
+    total: sum,
+    count: items.length,
     byMember: [...memberTotals.values()],
     byCategory: [...categories.values()]
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, LOCALE))
-      .map((entry) => ({ ...entry, share: total ? entry.total / total : 0 })),
+      .map((entry) => ({ ...entry, share: sum ? entry.total / sum : 0 })),
+    items: sortExpenses(items),
   };
 }
 
@@ -428,6 +409,8 @@ export function parseData(raw) {
       date: item.date,
       categoryId: categoryIds.has(item.categoryId) ? item.categoryId : null,
       createdAt: item.createdAt,
+      // Las copias de antes de existir esta opción no lo indican: cuentan como gastos familiares.
+      scope: item.scope === SCOPES.personal ? SCOPES.personal : SCOPES.family,
     };
   });
 

@@ -15,7 +15,14 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
     }
 
-    // Datos personales: perfil, gastos y categorías.
+    function validFamilyExpense(data) {
+      return data.amount is int && data.amount > 0
+        && data.date is string && data.date.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+        && data.categoryName is string && data.categoryName.size() <= 40
+        && data.note is string && data.note.size() <= 80;
+    }
+
+    // Datos personales: perfil, gastos personales y categorías.
     match /users/{uid}/{document=**} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
@@ -46,15 +53,18 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // Totales por mes de cada persona: los ven todos los miembros, solo los escribe su dueña.
-      match /summaries/{summaryId} {
+      // Gastos marcados como «Familia»: los ven todos los miembros; solo quien
+      // los registró puede modificarlos o borrarlos. Los personales nunca llegan aquí.
+      match /expenses/{expenseId} {
         allow read: if isMember(hid);
-        allow create, update: if isMember(hid)
-          && summaryId.matches(request.auth.uid + '_[0-9]{4}-[0-9]{2}')
-          && request.resource.data.uid == request.auth.uid
-          && request.resource.data.total is int
-          && request.resource.data.byCategory is map;
-        allow delete: if isMember(hid) && summaryId.matches(request.auth.uid + '_[0-9]{4}-[0-9]{2}');
+        allow create: if isMember(hid)
+          && request.resource.data.createdBy == request.auth.uid
+          && validFamilyExpense(request.resource.data);
+        allow update: if isMember(hid)
+          && resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdBy == request.auth.uid
+          && validFamilyExpense(request.resource.data);
+        allow delete: if isMember(hid) && resource.data.createdBy == request.auth.uid;
       }
 
       // Lista de compras compartida.
