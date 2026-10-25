@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.web.mis_gastos_8j84k",
+        "sha256_cert_fingerprints": ["4C:DC:E7:7A:FC:E5:0F:3F:FB:31:93:69:7A:01:87:F1:FD:05:B0:BD:E1:58:2E:67:5E:01:ED:92:83:45:1E:9F"]
+      }
+    }]

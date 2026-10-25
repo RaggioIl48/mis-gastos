@@ -8,3 +8,6 @@ node_modules/
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+
+# Firma de la app de Android: privada, nunca al repositorio
+android-apk/

@@ -418,6 +418,12 @@ function settingsView() {
       ${(state.household?.members.length ?? 0) > 1 ? '<li><button class="row-button danger" type="button" data-action="leave-household"><span class="row-texts"><span class="row-title">Salir del hogar</span></span></button></li>' : ''}
     </ul>
 
+    <h2 class="section-title">Compartir la app</h2>
+    <ul class="list">
+      <li><button class="row-button" type="button" data-action="recommend-app"><span class="row-texts"><span class="row-title">Recomendar a un amigo</span><span class="row-subtitle">Cada persona tiene su propia cuenta y su propio hogar</span></span>${ICONS.chevron}</button></li>
+      <li><a class="row-button" href="https://github.com/RaggioIl48/mis-gastos/releases/latest/download/mis-gastos.apk" rel="noopener"><span class="row-texts"><span class="row-title">App para Android (.apk)</span><span class="row-subtitle">Descárgala e instálala en un teléfono Android</span></span>${ICONS.chevron}</a></li>
+    </ul>
+
     <h2 class="section-title">Copia de seguridad</h2>
     <ul class="list">
       <li><button class="row-button" type="button" data-action="export-backup"><span class="row-texts"><span class="row-title">Exportar copia</span><span class="row-subtitle">Guarda un archivo con tus gastos y categorías</span></span>${ICONS.chevron}</button></li>
@@ -982,6 +988,26 @@ async function shareInvite() {
   }
 }
 
+/** Comparte la dirección de la app (sin invitación: quien la abra tendrá su propio hogar). */
+async function recommendApp() {
+  const url = `${location.origin}${location.pathname}`;
+  const text = 'Te recomiendo Mis Gastos para registrar tus gastos en pesos. Ábrela en el navegador e inicia sesión con Google:';
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'Mis Gastos', text, url });
+      return;
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Enlace copiado');
+  } catch {
+    await alertDialog('Enlace de la app', url);
+  }
+}
+
 let householdBusy = false;
 
 /** Se une al hogar de la invitación guardada o, si no hay, crea un hogar propio. */
@@ -1216,6 +1242,7 @@ const ACTIONS = {
   'import-backup': () => $('#backup-file')?.click(),
   'edit-name': () => openNameEditor(),
   invite: () => shareInvite(),
+  'recommend-app': () => recommendApp(),
   'leave-household': () => leaveHousehold(),
   'toggle-item': (el) => {
     const item = state.shopping.find((entry) => entry.id === el.dataset.id);
